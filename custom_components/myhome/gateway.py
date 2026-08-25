@@ -465,11 +465,18 @@ class MyHOMEGatewayHandler:
 
     def handle_sound_diffusion(self, raw_message: str) -> None:
         """Dispatch a WHO=22 frame to the relevant media_player entities."""
-        if self.mac not in self.hass.data[DOMAIN]:
-            # The config entry has been unloaded while the listener was still
-            # draining its socket. Raising here would kill the loop before it
-            # gets a chance to close the session.
+        # The listener outlives both ends of a reload: the config entry may have
+        # been unloaded (no gateway key left) or be halfway through its setup
+        # (`async_setup_entry` creates the key before filling it). Raising here
+        # would kill the loop before it gets a chance to close the session.
+        _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
+        if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
             return
+
+        if MEDIA_PLAYER not in _gateway_data[CONF_PLATFORMS]:
+            # Nothing to dispatch to: not worth parsing the frame.
+            return
+        _configured_amplifiers = _gateway_data[CONF_PLATFORMS][MEDIA_PLAYER]
 
         _event = parse_sound_diffusion(raw_message)
         if _event is None:
@@ -479,10 +486,6 @@ class MyHOMEGatewayHandler:
                 raw_message,
             )
             return
-
-        if MEDIA_PLAYER not in self.hass.data[DOMAIN][self.mac][CONF_PLATFORMS]:
-            return
-        _configured_amplifiers = self.hass.data[DOMAIN][self.mac][CONF_PLATFORMS][MEDIA_PLAYER]
 
         if isinstance(_event, AMPLIFIER_EVENTS):
             _device_id = amplifier_device_id(_event.area, _event.point)
@@ -564,6 +567,10 @@ class MyHOMEGatewayHandler:
         self._terminate_sender = True
         self._terminate_listener = True
 
+        # Both flags are only read at the top of their loop, which is blocked on
+        # `get_next()` / `send_buffer.get()`: the workers keep running until the
+        # next frame or the next command wakes them. `handle_sound_diffusion`
+        # therefore has to tolerate a gateway key that is gone or half built.
         return True
 
     async def send(self, message: OWNCommand):

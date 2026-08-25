@@ -286,6 +286,18 @@ def test_dispatching_after_the_config_entry_was_unloaded_does_not_raise(installa
     installation.handler.handle_sound_diffusion("*#22*3#2#2*12*1*4##")
 
 
+def test_dispatching_while_the_config_entry_is_being_reloaded_does_not_raise(installation):
+    """`async_setup_entry` creates the gateway key before it fills it."""
+    installation.data[DOMAIN][MAC] = {}
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*12*1*4##")
+
+
+def test_a_gateway_without_amplifiers_does_not_parse_anything(installation):
+    del installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"]
+    installation.handler.handle_sound_diffusion("*#22*5#2#1*11*1*10600*14##")
+    assert installation.data[DOMAIN][MAC][const.CONF_SOUND_SOURCES][1] == {}
+
+
 # --------------------------------------------------------------------------- #
 # Entity behaviour
 # --------------------------------------------------------------------------- #
