@@ -537,8 +537,12 @@ def test_the_tuner_is_only_asked_for_once_per_gateway(installation):
         assert _requests.count(f"*#22*3#{_area}#{_point}*1##") == 1
 
 
-def test_the_tuner_is_claimed_before_the_first_request_goes_out(installation):
-    """Eleven amplifiers are added at once; only one of them may ask for the tuning."""
+def test_only_one_amplifier_asks_for_the_shared_tuning(installation):
+    """Eleven amplifiers are added at once, and the tuner is one box.
+
+    The flag is claimed with no `await` between the test and the set, so the
+    amplifiers cannot interleave between the two however they are scheduled.
+    """
 
     async def _update_concurrently():
         await asyncio.gather(*(_entity.async_update() for _entity in installation.entities.values()))
