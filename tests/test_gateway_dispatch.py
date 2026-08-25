@@ -467,43 +467,31 @@ def test_stepping_an_unknown_volume_only_sends(installation):
     assert installation.handler.sent == ["*22*3#1*3#2#2##"]
 
 
-def test_a_stale_volume_echo_does_not_undo_a_fresh_command(installation):
-    """The amplifier answers the volume it still holds while the command travels."""
-    _entity = installation.entity(2, 2)
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
+def test_a_wall_command_right_after_a_home_assistant_one_is_applied(installation):
+    """Verified on hardware: every command is echoed by the bus in under 300 ms.
 
-    asyncio.run(_entity.async_volume_up())
-    assert _entity._raw_volume == 19
-
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
-    assert _entity._raw_volume == 19
-
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*19##")
-    assert _entity._raw_volume == 19
-
-
-def test_a_stale_state_echo_does_not_undo_a_fresh_command(installation):
-    _entity = installation.entity(2, 2)
-    installation.replay(["*#22*3#2#2*12*1*4##"])
-
-    asyncio.run(_entity.async_turn_off())
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*12*1*4##")
-
-    assert _entity.state == OFF
-
-
-def test_the_bus_wins_once_the_command_is_old_enough(installation):
-    """The window only hides the latency; a real disagreement has to come through."""
+    Whatever comes next therefore says what the amplifier is doing now, even a
+    tenth of a second after we asked for something else: somebody pressed the
+    wall switch.
+    """
     _entity = installation.entity(2, 2)
     asyncio.run(_entity.async_turn_on())
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
+    assert _entity.state == PLAYING
 
-    _entity._last_command_at -= media_player.COMMAND_ECHO_GRACE
+    installation.handler.handle_sound_diffusion("*22*0#4#2*3#2#2##")
+    assert _entity.state == OFF
 
     installation.handler.handle_sound_diffusion("*#22*3#2#2*12*0*10##")
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*7##")
     assert _entity.state == OFF
-    assert _entity._raw_volume == 7
+
+
+def test_a_volume_moved_at_the_wall_right_after_a_command_is_applied(installation):
+    _entity = installation.entity(2, 2)
+    asyncio.run(_entity.async_set_volume_level(0.5))
+    assert _entity._raw_volume == 16
+
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*20##")
+    assert _entity._raw_volume == 20
 
 
 def test_an_amplifier_that_never_was_commanded_takes_what_the_bus_says(installation):
