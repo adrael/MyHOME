@@ -700,7 +700,8 @@ class FakeEventSession:
         self.connects = self.connects + 1
 
     async def get_next(self):
-        await asyncio.sleep(0)
+        # No `await` here on purpose: the real `get_next` fails without
+        # yielding when its reader is missing, and the loop must cope.
         if not self._script:
             self._handler._terminate_listener = True
             # A frame the loop ignores, so nothing is read into the last turn.
@@ -764,6 +765,29 @@ def test_a_session_answering_nothing_warns_once_per_outage(installation, monkeyp
 
     _warnings = [_record for _record in caplog.records if "answered nothing" in _record.getMessage()]
     assert len(_warnings) == 2, "once when it stopped answering, once after it came back and stopped again"
+
+
+def test_a_session_answering_nothing_is_reopened_and_yields(installation, monkeypatch):
+    """A `None` answer means the socket is gone: reopen it, and let other tasks run meanwhile."""
+    _other_task_ran = False
+
+    async def _other():
+        nonlocal _other_task_ran
+        _other_task_ran = True
+
+    async def _both():
+        _task = asyncio.ensure_future(_other())
+        monkeypatch.setattr(gateway, "EVENT_SESSION_RETRY_DELAY", 0)
+        _session = FakeEventSession([None] * 50, installation.handler)
+        monkeypatch.setattr(gateway, "OWNEventSession", lambda gateway, logger: _session)
+        await installation.handler.listening_loop()
+        await _task
+        return _session
+
+    _session = asyncio.run(_both())
+
+    assert _other_task_ran, "the loop starved the event loop"
+    assert _session.connects >= 50, "every `None` must try to reopen the session"
 
 
 def test_a_reconnection_survives_an_amplifier_that_cannot_be_updated(installation):

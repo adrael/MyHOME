@@ -194,6 +194,14 @@ class MyHOMEGatewayHandler:
                 if self.is_connected:
                     LOGGER.warning("%s Event session answered nothing, waiting for it to come back.", self.log_id)
                 self._set_connected(False)
+                # `get_next` fails without yielding (a missing reader raises
+                # before any await): reopen the session ourselves and pause,
+                # or this loop would starve the event loop.
+                try:
+                    await _event_session.connect()
+                except Exception:  # pylint: disable=broad-except
+                    LOGGER.debug("%s Could not reopen the event session yet.", self.log_id)
+                await asyncio.sleep(EVENT_SESSION_RETRY_DELAY)
                 continue
 
             if not self.is_connected:
