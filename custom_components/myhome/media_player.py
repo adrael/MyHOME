@@ -40,6 +40,7 @@ from .sound_diffusion import (
     AmplifierState,
     AmplifierVolume,
     AreaCommand,
+    SOURCE_EVENTS,
     SoundDiffusionEvent,
     amplifier_off,
     amplifier_on_simple,
@@ -137,9 +138,7 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         self._point = int(_parts[2])
         self._source = source
         #: Source a WHAT 35 command put this amplifier on, overriding the
-        #: configured one. The gateway still filters source events on the
-        #: configured source, so a runtime switch shows up here but does not
-        #: schedule a refresh of its own.
+        #: configured one.
         self._current_source = None
 
         # Make sure the shared tuner store exists before any event is dispatched.
@@ -337,8 +336,15 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
 
         Source level events carry no amplifier state: the shared tuner store has
         already been updated by the gateway, so they only trigger a refresh.
+        They are handed to every amplifier of the gateway, since the source one
+        listens to is the configured one only until a WHAT 35 command moves it.
         """
         LOGGER.debug("%s Sound diffusion event: %s", self._gateway_handler.log_id, message)
+
+        if isinstance(message, SOURCE_EVENTS) and message.source != self._tuner_source:
+            # Verified on hardware: a request addressed to one source is answered
+            # by all of them. This amplifier plays one.
+            return
 
         if isinstance(message, AmplifierState):
             self._attr_state = MediaPlayerState.PLAYING if message.is_on else MediaPlayerState.OFF

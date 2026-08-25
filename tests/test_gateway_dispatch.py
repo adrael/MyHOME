@@ -379,6 +379,41 @@ def test_an_amplifier_follows_the_source_a_what_35_command_selected(installation
     assert _entity.extra_state_attributes["source_id"] == 2
 
 
+def test_an_amplifier_moved_by_a_what_35_is_refreshed_by_its_new_source(installation):
+    """A runtime source switch has to move the entity, not only what it reads.
+
+    The configured source is what the file says; WHAT 35 is what happened. It is
+    the entity, which knows both, that tells a source event apart.
+    """
+    _entity = installation.entity(2, 2)
+    installation.handler.handle_sound_diffusion("*22*35#4#2#2*3#2#2##")
+    _entity.written_states = 0
+
+    installation.handler.handle_sound_diffusion("*#22*5#2#1*11*1*10600*14##")
+    assert _entity.written_states == 0
+
+    installation.handler.handle_sound_diffusion("*#22*5#2#2*11*1*9730*15##")
+    assert _entity.written_states == 1
+    assert _entity.media_title == "97.3 MHz · NOSTALGIE"
+
+
+def test_a_source_nobody_listens_to_is_parsed_and_ignored(installation):
+    """Verified on hardware: sources 2 to 4 answer a dim 11 request as well.
+
+    They exist on the bus and are tuned to something; no amplifier of this
+    installation is on them, so nothing they say is worth a state write.
+    """
+    installation.replay(["*#22*5#2#1*11*1*9430*1##"])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.handler.handle_sound_diffusion("*#22*2#2*5*1*8701##")
+
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+    assert installation.tuner[2]["frequency"] == 8701
+    assert installation.entity(2, 2).extra_state_attributes["frequency_mhz"] == 94.3
+
+
 def test_an_unchanged_tuner_does_not_refresh_the_amplifiers(installation):
     installation.handler.handle_sound_diffusion("*#22*5#2#1*11*1*10600*14##")
     for _entity in installation.entities.values():

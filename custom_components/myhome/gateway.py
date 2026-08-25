@@ -61,7 +61,6 @@ from .const import (
     CONF_LONG_PRESS,
     CONF_LONG_RELEASE,
     CONF_SOUND_SOURCES,
-    CONF_SOURCE,
     CONF_TUNER_REQUESTED,
     CONF_WHERE,
     DOMAIN,
@@ -499,12 +498,14 @@ class MyHOMEGatewayHandler:
             _devices = [_configured_amplifiers[_device_id]]
         elif isinstance(_event, SOURCE_EVENTS):
             # A source is shared by several amplifiers, so its tuning is stored
-            # once per gateway and read back by each of them. Repeated readings,
-            # and the events carrying no tuning at all, change nothing worth
-            # writing a dozen entity states for.
+            # once per gateway and read back by each of them. Repeated readings
+            # change nothing worth writing a dozen entity states for.
             if not self.update_sound_source(_event):
                 return
-            _devices = [_device for _device in _configured_amplifiers.values() if _device[CONF_SOURCE] == _event.source]
+            # Handed to every amplifier: which source one listens to is the
+            # configured one until a WHAT 35 command moves it, and only the
+            # entity knows that. It drops the events of the other sources.
+            _devices = list(_configured_amplifiers.values())
         elif isinstance(_event, BROADCAST_EVENTS):
             # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
             _devices = [_device for _device in _configured_amplifiers.values() if int(_device[CONF_WHERE].split("#")[1]) == _event.area]
