@@ -115,7 +115,10 @@ amplifier that is off carries only its addressing.
 - **Entity ids** come from the device name, as usual: `name: "Radio Cuisine"`
   gives `media_player.radio_cuisine`.
 - **Availability** follows the gateway connection: every amplifier goes
-  unavailable while the gateway is unreachable.
+  unavailable while the gateway is unreachable. Entities are created before the
+  listener connects, so they start out unavailable and come back with the first
+  frame the bus sends them — the answer to the status request issued at startup,
+  in the normal case.
 - **Groups**: a `platform: group` media player is fine for on/off and volume,
   but **never send next/previous track to a group**. Each member would ask the
   shared tuner for the next station and it would jump once per member. Drive the
@@ -152,6 +155,11 @@ behave differently, or not at all.
 - **The spec form of the station commands** (`*22*9#*2#<source>##`). The
   integration sends the observed `*22*9*5#3#<area>#<point>##` instead.
 - **AM display.** Any modulation other than FM is printed in kHz, untested.
+- **Area and general commands.** `*22*<what>#<mm>#<a>*4#<area>##` and
+  `*22*<what>#<mm>#<a>*0##` are read as "turn this area on/off" and "turn
+  everything on/off" and are reflected on the amplifiers they address, all of
+  them in the general case. Neither was seen on the bus; if the frames mean
+  something else, a single frame flips the state of every amplifier at once.
 - **Setting a frequency** has no dedicated service. The existing
   `myhome.send_message` service can write dimension 11 on a source:
 
