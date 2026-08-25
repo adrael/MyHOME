@@ -283,6 +283,12 @@ async def async_unload_entry(hass, entry):
     if not await hass.config_entries.async_unload_platforms(
         entry, list(hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_PLATFORMS].keys())
     ):
+        # The entry stays loaded, but leaving the listener running would keep a
+        # socket open against a gateway nobody talks to any more.
+        LOGGER.warning(
+            "A platform refused to unload, closing the gateway listener anyway."
+        )
+        await hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_ENTITY].close_listener()
         return False
 
     hass.services.async_remove(DOMAIN, "sync_time")
