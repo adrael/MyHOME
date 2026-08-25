@@ -1,238 +1,319 @@
 # A "Radios" view for the sound diffusion amplifiers.
 #
-# Copy it into a dashboard through "Edit dashboard" > "Raw configuration
-# editor", or keep it in a YAML dashboard. Entity ids follow the `name:` of the
-# amplifiers in `myhome.yaml`: "Radio Cuisine" gives `media_player.radio_cuisine`.
+# Requires Home Assistant 2024.10 or later: `perform-action` and the
+# services -> actions rename landed in 2024.8, the `sections` view and the
+# `heading` card in 2024.10.
+#
+# Paste the `- title: Radios` item below INTO the `views:` list your dashboard
+# already has ("Edit dashboard" > 3-dot menu > "Raw configuration editor").
+# Do not paste the whole file over the editor: that would drop your other views.
+#
+# Entity ids follow the `name:` of the amplifiers in `myhome.yaml`:
+# "Radio Cuisine" gives `media_player.radio_cuisine`.
 #
 # One tuner is shared by every amplifier, so the station is shown once, at the
-# top, and the next/previous buttons address a single reference amplifier.
-# Sending "next track" to a group would make every member ask for the next
-# station and the tuner would jump as many times as there are members.
+# top. The tuner attributes are published whether the amplifier is playing or
+# not, so those three rows stay readable with the whole house switched off.
+#
+# On/off: tapping a tile's icon toggles that amplifier (tile default). Rooms
+# with two amplifiers get an extra pair of buttons to drive both at once.
+#
+# Card widths follow the Home Assistant defaults for sections; on 2024.11+ you
+# can pin them with `grid_options: {columns: 6}` per card.
 
 views:
   - title: Radios
     path: radios
     icon: mdi:radio
-    cards:
-      - type: entities
-        title: Tuner
-        icon: mdi:radio-tower
-        entities:
-          - type: attribute
-            entity: media_player.radio_cuisine
-            attribute: station_name
-            name: Station
-          - type: attribute
-            entity: media_player.radio_cuisine
-            attribute: frequency_mhz
-            name: Frequency
-            suffix: " MHz"
-          - type: attribute
-            entity: media_player.radio_cuisine
-            attribute: preset
-            name: Preset
-        footer:
-          type: buttons
-          entities:
-            - entity: media_player.radio_cuisine
-              name: Previous
-              icon: mdi:skip-previous
-              tap_action:
-                action: perform-action
-                perform_action: media_player.media_previous_track
-                target:
-                  entity_id: media_player.radio_cuisine
-            - entity: media_player.radio_cuisine
-              name: Next
-              icon: mdi:skip-next
-              tap_action:
-                action: perform-action
-                perform_action: media_player.media_next_track
-                target:
-                  entity_id: media_player.radio_cuisine
-
-      - type: vertical-stack
+    type: sections
+    sections:
+      - type: grid
         cards:
+          - type: heading
+            heading: Tuner
+            heading_style: title
+            icon: mdi:radio-tower
+          - type: entities
+            entities:
+              - type: attribute
+                entity: media_player.radio_cuisine
+                attribute: station_name
+                name: Station
+                icon: mdi:playlist-music
+              - type: attribute
+                entity: media_player.radio_cuisine
+                attribute: frequency_mhz
+                name: Frequency
+                suffix: " MHz"
+                icon: mdi:sine-wave
+              - type: attribute
+                entity: media_player.radio_cuisine
+                attribute: preset
+                name: Preset
+                icon: mdi:numeric
+            footer:
+              type: buttons
+              entities:
+                - entity: media_player.radio_cuisine
+                  name: Previous
+                  icon: mdi:skip-previous
+                  show_name: true
+                  tap_action:
+                    action: perform-action
+                    perform_action: media_player.media_previous_track
+                    target:
+                      entity_id: media_player.radio_cuisine
+                - entity: media_player.radio_cuisine
+                  name: Next
+                  icon: mdi:skip-next
+                  show_name: true
+                  tap_action:
+                    action: perform-action
+                    perform_action: media_player.media_next_track
+                    target:
+                      entity_id: media_player.radio_cuisine
+          - type: button
+            name: Turn every amplifier off
+            icon: mdi:speaker-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_cuisine
+                  - media_player.radio_suite
+                  - media_player.radio_suite_sdb
+                  - media_player.radio_bureau_julie
+                  - media_player.radio_bureau_julie_sdb
+                  - media_player.radio_gym
+                  - media_player.radio_chambre_ami
+                  - media_player.radio_chambre_ami_sdb
+                  - media_player.radio_bureau_raph
+                  - media_player.radio_bureau_raph_sdb
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Kitchen
+            heading_style: title
+            icon: mdi:silverware-fork-knife
           - type: tile
             entity: media_player.radio_cuisine
-            name: Cuisine
+            name: Kitchen
+            icon: mdi:silverware-fork-knife
             state_content:
               - state
               - media_title
             features:
               - type: media-player-volume-slider
-          - type: horizontal-stack
-            cards:
-              - type: button
-                name: On
-                icon: mdi:power
-                show_state: false
-                tap_action:
-                  action: perform-action
-                  perform_action: media_player.turn_on
-                  target:
-                    entity_id: media_player.radio_cuisine
-              - type: button
-                name: Off
-                icon: mdi:power-off
-                show_state: false
-                tap_action:
-                  action: perform-action
-                  perform_action: media_player.turn_off
-                  target:
-                    entity_id: media_player.radio_cuisine
+                show_mute_button: false
 
-      - type: vertical-stack
+      - type: grid
         cards:
+          - type: heading
+            heading: Master suite
+            heading_style: title
+            icon: mdi:bed-king
           - type: tile
             entity: media_player.radio_suite
             name: Suite
+            icon: mdi:bed-king
             state_content:
               - state
               - media_title
             features:
               - type: media-player-volume-slider
+                show_mute_button: false
           - type: tile
             entity: media_player.radio_suite_sdb
-            name: Suite SDB
+            name: Suite bathroom
+            icon: mdi:shower
             state_content:
               - state
               - media_title
             features:
               - type: media-player-volume-slider
-          - type: horizontal-stack
-            cards:
-              - type: button
-                name: On
-                icon: mdi:power
-                show_state: false
-                tap_action:
-                  action: perform-action
-                  perform_action: media_player.turn_on
-                  target:
-                    entity_id:
-                      - media_player.radio_suite
-                      - media_player.radio_suite_sdb
-              - type: button
-                name: Off
-                icon: mdi:power-off
-                show_state: false
-                tap_action:
-                  action: perform-action
-                  perform_action: media_player.turn_off
-                  target:
-                    entity_id:
-                      - media_player.radio_suite
-                      - media_player.radio_suite_sdb
+                show_mute_button: false
+          - type: button
+            name: Suite on
+            icon: mdi:power
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_on
+              target:
+                entity_id:
+                  - media_player.radio_suite
+                  - media_player.radio_suite_sdb
+          - type: button
+            name: Suite off
+            icon: mdi:power-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_suite
+                  - media_player.radio_suite_sdb
 
-      - type: vertical-stack
+      - type: grid
         cards:
-          - type: tile
-            entity: media_player.radio_bureau_raph
-            name: Bureau Raph
-            state_content:
-              - state
-              - media_title
-            features:
-              - type: media-player-volume-slider
-          - type: tile
-            entity: media_player.radio_bureau_raph_sdb
-            name: Bureau Raph SDB
-            state_content:
-              - state
-              - media_title
-            features:
-              - type: media-player-volume-slider
-          - type: horizontal-stack
-            cards:
-              - type: button
-                name: On
-                icon: mdi:power
-                show_state: false
-                tap_action:
-                  action: perform-action
-                  perform_action: media_player.turn_on
-                  target:
-                    entity_id:
-                      - media_player.radio_bureau_raph
-                      - media_player.radio_bureau_raph_sdb
-              - type: button
-                name: Off
-                icon: mdi:power-off
-                show_state: false
-                tap_action:
-                  action: perform-action
-                  perform_action: media_player.turn_off
-                  target:
-                    entity_id:
-                      - media_player.radio_bureau_raph
-                      - media_player.radio_bureau_raph_sdb
-
-      - type: vertical-stack
-        cards:
+          - type: heading
+            heading: Julie's office
+            heading_style: title
+            icon: mdi:desktop-tower-monitor
           - type: tile
             entity: media_player.radio_bureau_julie
-            name: Bureau Julie
+            name: Julie's office
+            icon: mdi:desktop-tower-monitor
             state_content:
               - state
               - media_title
             features:
               - type: media-player-volume-slider
+                show_mute_button: false
           - type: tile
             entity: media_player.radio_bureau_julie_sdb
-            name: Bureau Julie SDB
+            name: Julie's bathroom
+            icon: mdi:shower
             state_content:
               - state
               - media_title
             features:
               - type: media-player-volume-slider
+                show_mute_button: false
+          - type: button
+            name: Julie on
+            icon: mdi:power
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_on
+              target:
+                entity_id:
+                  - media_player.radio_bureau_julie
+                  - media_player.radio_bureau_julie_sdb
+          - type: button
+            name: Julie off
+            icon: mdi:power-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_bureau_julie
+                  - media_player.radio_bureau_julie_sdb
 
-      - type: vertical-stack
+      - type: grid
         cards:
-          - type: tile
-            entity: media_player.radio_chambre_ami
-            name: Chambre Ami
-            state_content:
-              - state
-              - media_title
-            features:
-              - type: media-player-volume-slider
-          - type: tile
-            entity: media_player.radio_chambre_ami_sdb
-            name: Chambre Ami SDB
-            state_content:
-              - state
-              - media_title
-            features:
-              - type: media-player-volume-slider
-
-      - type: vertical-stack
-        cards:
+          - type: heading
+            heading: Gym
+            heading_style: title
+            icon: mdi:dumbbell
           - type: tile
             entity: media_player.radio_gym
             name: Gym
+            icon: mdi:dumbbell
             state_content:
               - state
               - media_title
             features:
               - type: media-player-volume-slider
+                show_mute_button: false
 
-      - type: button
-        name: Turn everything off
-        icon: mdi:speaker-off
-        show_state: false
-        tap_action:
-          action: perform-action
-          perform_action: media_player.turn_off
-          target:
-            entity_id:
-              - media_player.radio_cuisine
-              - media_player.radio_suite
-              - media_player.radio_suite_sdb
-              - media_player.radio_bureau_julie
-              - media_player.radio_bureau_julie_sdb
-              - media_player.radio_gym
-              - media_player.radio_chambre_ami
-              - media_player.radio_chambre_ami_sdb
-              - media_player.radio_bureau_raph
-              - media_player.radio_bureau_raph_sdb
+      - type: grid
+        cards:
+          - type: heading
+            heading: Guest room
+            heading_style: title
+            icon: mdi:bed
+          - type: tile
+            entity: media_player.radio_chambre_ami
+            name: Guest room
+            icon: mdi:bed
+            state_content:
+              - state
+              - media_title
+            features:
+              - type: media-player-volume-slider
+                show_mute_button: false
+          - type: tile
+            entity: media_player.radio_chambre_ami_sdb
+            name: Guest bathroom
+            icon: mdi:shower
+            state_content:
+              - state
+              - media_title
+            features:
+              - type: media-player-volume-slider
+                show_mute_button: false
+          - type: button
+            name: Guest on
+            icon: mdi:power
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_on
+              target:
+                entity_id:
+                  - media_player.radio_chambre_ami
+                  - media_player.radio_chambre_ami_sdb
+          - type: button
+            name: Guest off
+            icon: mdi:power-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_chambre_ami
+                  - media_player.radio_chambre_ami_sdb
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Raph's office
+            heading_style: title
+            icon: mdi:desktop-tower-monitor
+          - type: tile
+            entity: media_player.radio_bureau_raph
+            name: Raph's office
+            icon: mdi:desktop-tower-monitor
+            state_content:
+              - state
+              - media_title
+            features:
+              - type: media-player-volume-slider
+                show_mute_button: false
+          - type: tile
+            entity: media_player.radio_bureau_raph_sdb
+            name: Raph's bathroom
+            icon: mdi:shower
+            state_content:
+              - state
+              - media_title
+            features:
+              - type: media-player-volume-slider
+                show_mute_button: false
+          - type: button
+            name: Raph on
+            icon: mdi:power
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_on
+              target:
+                entity_id:
+                  - media_player.radio_bureau_raph
+                  - media_player.radio_bureau_raph_sdb
+          - type: button
+            name: Raph off
+            icon: mdi:power-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_bureau_raph
+                  - media_player.radio_bureau_raph_sdb
+
+# The station buttons address one reference amplifier, the kitchen one, and
+# nothing else. Never point them at a group or repeat them on every tile: each
+# member would ask the shared tuner for the next station and it would jump once
+# per member.

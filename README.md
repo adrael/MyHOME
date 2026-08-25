@@ -25,6 +25,8 @@ This fork adds a `media_player` platform for MyHOME sound diffusion amplifiers.
 Each amplifier becomes one `media_player` entity supporting on/off, volume set
 and volume step, and next/previous station.
 
+Requires Home Assistant 2024.10 or later.
+
 All amplifiers of an installation usually share the same source (a single tuner),
 so changing station on one amplifier changes it for all of them. The integration
 reflects that: the tuning information is read once per gateway and shown on every
@@ -62,7 +64,7 @@ Available options, per amplifier:
 | -------------- | ---------------- | ------------------------------------------------------- |
 | `where`        | *required*       | Amplifier address, `3#<area>#<point>`, area/point in [1-9] |
 | `name`         | *required*       | Device name; the entity id is derived from it            |
-| `who`          | `"22"`           | Leave it alone, it is here for symmetry with the other platforms |
+| `who`          | `"22"`           | WHO of the platform; present for symmetry with the others, and only `"22"` is accepted |
 | `entity_name`  | `None`           | Entity name, when it should differ from the device name  |
 | `source`       | `1`              | Source (tuner) this amplifier listens to, `[1-4]`        |
 | `icon`         | *device class*   | Entity icon; left out, the speaker device class picks one |
@@ -94,14 +96,22 @@ villa:
     ampli_cuisine: { where: "3#7#1", name: "Radio Cuisine" }
 ```
 
-Frequencies not listed simply show without a name (`97.3 MHz`).
+Frequencies not listed simply show without a name (`101.1 MHz`).
 
 ### Attributes
 
 Each amplifier exposes `area`, `point` and `source_id`, plus `raw_volume` (the
-bus' 0-31 value) once it is known and, while it is playing, `frequency_mhz`,
-`station_name` and `preset`. Attributes without a value are left out, so an
-amplifier that is off carries only its addressing.
+bus' 0-31 value) once it is known. The tuner is one box shared by the whole
+installation, so `frequency_mhz`, `station_name` and `preset` are published as
+soon as they are known, **whether that amplifier is playing or not** — a
+dashboard can show the station with the whole house switched off. `modulation`
+is added only when it is not FM (2 long wave, 3 medium wave, 4 short wave).
+
+Attributes without a value are left out, so an amplifier of a gateway whose
+tuner never answered carries only its addressing.
+
+What comes out of *this* amplifier is a different matter: `media_title`,
+`media_channel` and `media_content_type` are `None` unless it is playing.
 
 ### Behaviour & limitations
 
@@ -114,11 +124,14 @@ amplifier that is off carries only its addressing.
   installation expose none of it; only on/off, volume and station.
 - **Entity ids** come from the device name, as usual: `name: "Radio Cuisine"`
   gives `media_player.radio_cuisine`.
+- **The state is `playing`, not `on`.** A media player that reports `on` gets
+  its next/previous buttons hidden by the Home Assistant cards, so an amplifier
+  that is playing reports `playing`. In templates and conditions, write
+  `is_state('media_player.radio_cuisine', 'playing')`.
 - **Availability** follows the gateway connection: every amplifier goes
-  unavailable while the gateway is unreachable. Entities are created before the
-  listener connects, so they start out unavailable and come back with the first
-  frame the bus sends them — the answer to the status request issued at startup,
-  in the normal case.
+  unavailable while the gateway is unreachable, and comes back as soon as the
+  listener reconnects. After an outage every amplifier and the tuner are asked
+  for their state again, since the bus went on living without us.
 - **Groups**: a `platform: group` media player is fine for on/off and volume,
   but **never send next/previous track to a group**. Each member would ask the
   shared tuner for the next station and it would jump once per member. Drive the
@@ -128,7 +141,7 @@ amplifier that is off carries only its addressing.
 # configuration.yaml — on/off and volume only
 media_player:
   - platform: group
-    name: Radio Suite (pièce)
+    name: Radio Suite (room)
     entities:
       - media_player.radio_suite
       - media_player.radio_suite_sdb
@@ -138,8 +151,13 @@ media_player:
 
 [`examples/dashboard-radios.yaml`](examples/dashboard-radios.yaml) is a ready to
 paste "Radios" view: the shared tuner at the top with its two station buttons,
-then one card per room with a volume slider and explicit on/off buttons, and a
-"turn everything off" button. Adapt the entity ids to your own `name:` values.
+then one section per room with a volume slider and, where a room holds two
+amplifiers, a pair of on/off buttons — plus a "turn every amplifier off" button.
+
+Paste the `- title: Radios` item into the `views:` list of your own dashboard
+(raw configuration editor) rather than over the whole file, and adapt the entity
+ids to your own `name:` values. The station buttons address the kitchen
+amplifier and nothing else, for the reason given just above.
 
 ### Experimental / not verified on hardware
 
@@ -152,9 +170,19 @@ behave differently, or not at all.
   an event, which is why the entity updates optimistically.
 - **WHAT 35** (`amplifier_on`, "turn on and select that source"). The
   integration sends the observed WHAT 1 form instead.
-- **The spec form of the station commands** (`*22*9#*2#<source>##`). The
-  integration sends the observed `*22*9*5#3#<area>#<point>##` instead.
-- **AM display.** Any modulation other than FM is printed in kHz, untested.
+- **The spec form of the station and seek commands** (`*22*9#*2#<source>##`,
+  `*22*5#*2#<source>##`). They end on an empty WHAT parameter, which OWNd builds
+  but marks invalid; nothing reads that mark before sending, so
+  `myhome.send_message` does put them on the bus — what the gateway makes of
+  them is the unknown. The integration sends the observed
+  `*22*9*5#3#<area>#<point>##` instead, which is itself a frame that was
+  captured going the other way: the wall control announcing a station change to
+  the clients, replayed here as a command.
+- **AM display.** Any modulation other than FM is printed in kHz, untested; the
+  installation this was written against only has an FM tuner.
+- **Turning off with an area parameter of 0** (`*22*0#4#0*3#<a>#<p>##`), which
+  is outside the `[1-9]` range of the spec. It is what the wall command emitted,
+  so it is what the integration sends.
 - **Area commands.** `*22*<what>#<mm>#<a>*4#<area>##` is read as "turn this
   area on/off" and reflected on the amplifiers of that area. The spec lists the
   address, no command session uses it and it was never seen on the bus; the
@@ -169,27 +197,34 @@ data:
   message: "*#22*5#2#1*#11*1*10600*14##"   # source 1, FM, 106.00 MHz, preset 14
 ```
 
-### Migrating from upstream (anotherjulien/MyHOME)
+### Installing / migrating from upstream (anotherjulien/MyHOME)
 
 The domain stays `myhome`, so your config entry and your `myhome.yaml` are kept
 as they are: there is nothing to reconfigure, and the other platforms behave
 exactly as before.
 
-Through HACS:
+HACS installs a repository's default branch or one of its releases. This fork's
+`master` carries the sound diffusion platform once the work is merged; until
+then, install manually.
 
-1. In HACS, open the MyHOME integration, choose *Remove*, and keep the
-   integration files if HACS offers to.
-2. Add `adrael/MyHOME` as a custom repository, of type *Integration*.
-3. Install MyHOME from that repository.
+Through HACS, without removing anything first:
+
+1. HACS > 3-dot menu > *Custom repositories*, add `adrael/MyHOME` with the
+   *Integration* type.
+2. Open MyHOME in HACS and *Download* — it installs over the upstream copy, in
+   the same `custom_components/myhome/` folder.
+3. Add the `media_player:` block to `myhome.yaml` **now**, so one restart is
+   enough.
 4. Restart Home Assistant.
-5. Add a `media_player:` block to `myhome.yaml` and restart again.
 
-Manually: replace the contents of `/config/custom_components/myhome/` with this
-repository's `custom_components/myhome/`, then restart.
+Manually, which is what you want before the merge: back up
+`/config/custom_components/myhome/`, replace its contents with this repository's
+`custom_components/myhome/`, add the `media_player:` block to `myhome.yaml`, and
+restart.
 
-To roll back, reinstall the upstream integration **and comment out the
-`media_player:` block of `myhome.yaml`** before restarting: upstream does not
-know that key and will refuse the file.
+To roll back, reinstall the upstream integration **and comment out both the
+`media_player:` and the `radio_stations:` keys of `myhome.yaml`** before
+restarting: upstream knows neither and will refuse the file.
 
 ### Tests
 

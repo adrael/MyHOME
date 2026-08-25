@@ -158,14 +158,83 @@ def _yaml_blocks(path):
         return re.findall(r"```yaml\n(.*?)```", _file.read(), re.S)
 
 
-def test_the_readme_myhome_yaml_example_validates():
+def _readme_examples():
     _candidates = []
     for _block in _yaml_blocks(os.path.join(REPOSITORY, "README.md")):
         _parsed = yaml.safe_load(_block)
         if isinstance(_parsed, dict) and all(isinstance(_value, dict) and "mac" in _value for _value in _parsed.values()):
             _candidates.append(_parsed)
+    return _candidates
+
+
+def test_the_readme_myhome_yaml_example_validates():
+    _candidates = _readme_examples()
 
     assert _candidates, "the README should show at least one complete myhome.yaml example"
     for _example in _candidates:
         _result = validate.config_schema(copy.deepcopy(_example))
         assert _result, _example
+
+
+# --------------------------------------------------------------------------- #
+# The dashboard example has to address the amplifiers of the README
+# --------------------------------------------------------------------------- #
+
+
+def _entity_id(name):
+    """What Home Assistant slugifies a device name into.
+
+    `has_entity_name` with no entity name of its own: the entity id is the
+    device name, which is what `myhome_device.py` sets up.
+    """
+    return "media_player." + re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", name.lower())).strip("_")
+
+
+def _readme_amplifiers():
+    """The entity ids of the fullest `media_player` example of the README, in order."""
+    _blocks = [_block for _example in _readme_examples() for _block in _example.values() if "media_player" in _block]
+    _biggest = max(_blocks, key=lambda _block: len(_block["media_player"]))
+    return [_entity_id(_amplifier["name"]) for _amplifier in _biggest["media_player"].values()]
+
+
+def _dashboard_view():
+    with open(os.path.join(REPOSITORY, "examples", "dashboard-radios.yaml"), encoding="utf-8") as _file:
+        return yaml.safe_load(_file)["views"][0]
+
+
+def _referenced_entities(node, found=None):
+    """Every entity the dashboard points at, under any of the keys that carry one."""
+    found = [] if found is None else found
+    if isinstance(node, dict):
+        for _key, _value in node.items():
+            if _key in ("entity", "entity_id"):
+                found.extend([_value] if isinstance(_value, str) else _value)
+            else:
+                _referenced_entities(_value, found)
+    elif isinstance(node, list):
+        for _item in node:
+            _referenced_entities(_item, found)
+    return found
+
+
+def _dashboard_cards():
+    return [_card for _section in _dashboard_view()["sections"] for _card in _section["cards"]]
+
+
+def test_the_dashboard_addresses_exactly_the_amplifiers_of_the_readme():
+    _expected = _readme_amplifiers()
+
+    assert len(_expected) == 10
+    assert set(_referenced_entities(_dashboard_view())) == set(_expected)
+
+
+def test_the_dashboard_lists_the_rooms_in_the_order_of_the_readme():
+    """One order for the whole documentation, so the three lists cannot drift."""
+    _expected = _readme_amplifiers()
+
+    _tiles = [_card["entity"] for _card in _dashboard_cards() if _card.get("type") == "tile"]
+    assert _tiles == _expected
+
+    _all_off = [_card for _card in _dashboard_cards() if _card.get("type") == "button" and "every amplifier off" in _card["name"]]
+    assert len(_all_off) == 1
+    assert _all_off[0]["tap_action"]["target"]["entity_id"] == _expected
