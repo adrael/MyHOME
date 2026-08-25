@@ -148,3 +148,24 @@ def test_radio_stations_are_optional():
 def test_the_configured_table_feeds_station_name():
     table = validate.RadioStations()({"106.0": "MA RADIO"})
     assert sound_diffusion.station_name(10600, table) == "MA RADIO"
+# --------------------------------------------------------------------------- #
+# The examples of the README have to validate
+# --------------------------------------------------------------------------- #
+
+
+def _yaml_blocks(path):
+    with open(path, encoding="utf-8") as _file:
+        return re.findall(r"```yaml\n(.*?)```", _file.read(), re.S)
+
+
+def test_the_readme_myhome_yaml_example_validates():
+    _candidates = []
+    for _block in _yaml_blocks(os.path.join(REPOSITORY, "README.md")):
+        _parsed = yaml.safe_load(_block)
+        if isinstance(_parsed, dict) and all(isinstance(_value, dict) and "mac" in _value for _value in _parsed.values()):
+            _candidates.append(_parsed)
+
+    assert _candidates, "the README should show at least one complete myhome.yaml example"
+    for _example in _candidates:
+        _result = validate.config_schema(copy.deepcopy(_example))
+        assert _result, _example

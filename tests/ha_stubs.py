@@ -38,15 +38,29 @@ class Entity:
     """Stand-in for `homeassistant.helpers.entity.Entity`."""
 
     _attr_should_poll = True
-
-    def __init__(self):
-        self.written_states = 0
+    #: A class attribute: `MyHOMEEntity.__init__` never calls `super().__init__`.
+    written_states = 0
 
     def async_write_ha_state(self):
-        self.written_states += 1
+        self.written_states = self.written_states + 1
 
     def async_schedule_update_ha_state(self, force_refresh=False):
-        self.written_states += 1
+        self.written_states = self.written_states + 1
+
+
+class MediaPlayerEntity(Entity):
+    """Stand-in exposing the `_attr_*` fallbacks the real class provides."""
+
+    _attr_state = None
+    _attr_volume_level = None
+
+    @property
+    def state(self):
+        return self._attr_state
+
+    @property
+    def volume_level(self):
+        return self._attr_volume_level
 
 
 class _StringEnumMeta(type):
@@ -140,7 +154,7 @@ def install():
     sys.modules["homeassistant.components.sensor"].SensorDeviceClass = SensorDeviceClass
     sys.modules["homeassistant.components.button"].ButtonEntity = type("ButtonEntity", (Entity,), {})
     _media_player = sys.modules["homeassistant.components.media_player"]
-    _media_player.MediaPlayerEntity = type("MediaPlayerEntity", (Entity,), {})
+    _media_player.MediaPlayerEntity = MediaPlayerEntity
     _media_player.MediaPlayerDeviceClass = MediaPlayerDeviceClass
     _media_player.MediaPlayerState = MediaPlayerState
     _media_player.MediaType = MediaType

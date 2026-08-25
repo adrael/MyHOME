@@ -1,0 +1,4 @@
+OWNd==0.7.48
+PyYAML
+pytest
+voluptuous
