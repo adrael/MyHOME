@@ -84,7 +84,8 @@ async def async_unload_entry(hass, config_entry):  # pylint: disable=unused-argu
 
     _configured_amplifiers = hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM]
 
-    for _amplifier in _configured_amplifiers.keys():
+    # `list()` because the loop deletes from the very dict it iterates over.
+    for _amplifier in list(_configured_amplifiers.keys()):
         del hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM][_amplifier]
 
 
