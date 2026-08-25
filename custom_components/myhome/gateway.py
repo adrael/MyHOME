@@ -27,6 +27,7 @@ from homeassistant.components.sensor import (
     DOMAIN as SENSOR,
 )
 from homeassistant.components.climate import DOMAIN as CLIMATE
+from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 
 from OWNd.connection import OWNSession, OWNEventSession, OWNCommandSession, OWNGateway
 from OWNd.message import (
@@ -59,10 +60,21 @@ from .const import (
     CONF_SHORT_RELEASE,
     CONF_LONG_PRESS,
     CONF_LONG_RELEASE,
+    CONF_SOUND_SOURCES,
     DOMAIN,
     LOGGER,
 )
 from .myhome_device import MyHOMEEntity
+from .sound_diffusion import (
+    AMPLIFIER_EVENTS,
+    SourceCommand,
+    SourceFrequency,
+    SourceFrequencyStation,
+    SourceRouted,
+    SourceState,
+    SourceStation,
+    parse_sound_diffusion,
+)
 from .button import (
     DisableCommandButtonEntity,
     EnableCommandButtonEntity,
@@ -150,6 +162,22 @@ class MyHOMEGatewayHandler:
                     self.hass.bus.async_fire("myhome_message_event", _event_content)
                 else:
                     self.hass.bus.async_fire("myhome_message_event", {"gateway": str(self.gateway.host), "message": str(message)})
+
+            _raw_message = str(message)
+            if _raw_message.startswith("*22*") or _raw_message.startswith("*#22*"):
+                # OWNd 0.7.48 does not model WHO=22: sound diffusion events come
+                # back as raw strings, dimension requests as generic commands.
+                self.handle_sound_diffusion(_raw_message)
+                continue
+
+            if _raw_message.startswith("*16*") or _raw_message.startswith("*#16*"):
+                # Legacy duplicates the bus emits next to every WHO=22 frame.
+                LOGGER.debug(
+                    "%s Ignoring legacy WHO=16 message: `%s`",
+                    self.log_id,
+                    _raw_message,
+                )
+                continue
 
             if not isinstance(message, OWNMessage):
                 LOGGER.warning(
@@ -362,6 +390,65 @@ class MyHOMEGatewayHandler:
 
         LOGGER.debug("%s Destroying listening worker.", self.log_id)
         self.listening_worker.cancel()
+
+    def handle_sound_diffusion(self, raw_message: str) -> None:
+        """Dispatch a WHO=22 frame to the relevant media_player entities."""
+        _event = parse_sound_diffusion(raw_message)
+        if _event is None:
+            LOGGER.debug(
+                "%s Ignoring sound diffusion message: `%s`",
+                self.log_id,
+                raw_message,
+            )
+            return
+
+        if MEDIA_PLAYER not in self.hass.data[DOMAIN][self.mac][CONF_PLATFORMS]:
+            return
+        _configured_amplifiers = self.hass.data[DOMAIN][self.mac][CONF_PLATFORMS][MEDIA_PLAYER]
+
+        if isinstance(_event, AMPLIFIER_EVENTS):
+            _device_id = f"22-3#{_event.area}#{_event.point}"
+            if _device_id not in _configured_amplifiers:
+                LOGGER.debug(
+                    "%s Sound diffusion event for unconfigured amplifier `%s`.",
+                    self.log_id,
+                    _device_id,
+                )
+                return
+            _devices = [_configured_amplifiers[_device_id]]
+        else:
+            # Every amplifier shares the same source, so the tuning information
+            # is stored once per gateway and all amplifiers are refreshed.
+            self.update_sound_source(_event)
+            _devices = list(_configured_amplifiers.values())
+
+        for _device in _devices:
+            for _entity in _device[CONF_ENTITIES]:
+                if isinstance(_device[CONF_ENTITIES][_entity], MyHOMEEntity):
+                    _device[CONF_ENTITIES][_entity].handle_event(_event)
+
+    def update_sound_source(self, event) -> None:
+        """Record the shared tuner's state, read back by every amplifier entity."""
+        _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
+
+        if isinstance(event, SourceFrequencyStation):
+            _source["modulation"] = event.modulation
+            _source["frequency"] = event.frequency
+            _source["station"] = event.station
+        elif isinstance(event, SourceFrequency):
+            _source["modulation"] = event.modulation
+            _source["frequency"] = event.frequency
+        elif isinstance(event, SourceStation):
+            _source["station"] = event.station
+        elif isinstance(event, SourceState):
+            _source["is_on"] = event.is_on
+            _source["mmtype"] = event.mmtype
+        elif isinstance(event, SourceRouted):
+            _source["is_on"] = True
+            _source["mmtype"] = event.mmtype
+            _source["area"] = event.area
+        elif isinstance(event, SourceCommand) and event.is_on is not None:
+            _source["is_on"] = event.is_on
 
     async def sending_loop(self, worker_id: int):
         self._terminate_sender = False
