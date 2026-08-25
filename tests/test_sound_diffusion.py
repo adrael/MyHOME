@@ -52,38 +52,90 @@ def test_parse_amplifier_volume_tolerates_trailing_star():
 
 def test_parse_amplifier_on_command():
     event = sd.parse_sound_diffusion("*22*1#4#2*3#2#2##")
-    assert event == sd.AmplifierCommand(area=2, point=2, what=1, mmtype=4, area_param=2)
+    assert event == sd.AmplifierCommand(area=2, point=2, what=1, params=(4, 2))
+    assert (event.mmtype, event.area_param) == (4, 2)
     assert event.is_on is True
 
 
 def test_parse_amplifier_on_command_second_amplifier_same_area():
     event = sd.parse_sound_diffusion("*22*1#4#2*3#2#1##")
-    assert event == sd.AmplifierCommand(area=2, point=1, what=1, mmtype=4, area_param=2)
+    assert event == sd.AmplifierCommand(area=2, point=1, what=1, params=(4, 2))
     assert event.is_on is True
 
 
 def test_parse_amplifier_off_command():
     """The wall command emits area 0 in the OFF frame, WHERE stays specific."""
     event = sd.parse_sound_diffusion("*22*0#4#0*3#2#1##")
-    assert event == sd.AmplifierCommand(area=2, point=1, what=0, mmtype=4, area_param=0)
+    assert event == sd.AmplifierCommand(area=2, point=1, what=0, params=(4, 0))
+    assert (event.mmtype, event.area_param) == (4, 0)
     assert event.is_on is False
 
 
 def test_parse_amplifier_volume_up_command():
     event = sd.parse_sound_diffusion("*22*3#1*3#2#2##")
-    assert event == sd.AmplifierCommand(area=2, point=2, what=3, mmtype=1, area_param=None)
+    assert event == sd.AmplifierCommand(area=2, point=2, what=3, params=(1,))
+    assert event.step == 1
+    assert event.mmtype is None
     assert event.is_on is None
 
 
 def test_parse_amplifier_volume_down_command():
     event = sd.parse_sound_diffusion("*22*4#1*3#2#2##")
-    assert event == sd.AmplifierCommand(area=2, point=2, what=4, mmtype=1, area_param=None)
+    assert event == sd.AmplifierCommand(area=2, point=2, what=4, params=(1,))
+    assert event.step == 1
     assert event.is_on is None
 
 
 def test_parse_amplifier_on_follow_me_and_on_source():
     assert sd.parse_sound_diffusion("*22*34#4#2*3#2#2##").is_on is True
     assert sd.parse_sound_diffusion("*22*35#4#2#1*3#2#2##").is_on is True
+
+
+def test_amplifier_command_source_is_the_third_what_parameter_of_what_35():
+    event = sd.parse_sound_diffusion("*22*35#4#2#1*3#2#2##")
+    assert event.params == (4, 2, 1)
+    assert event.source == 1
+    assert event.step is None
+
+
+def test_amplifier_command_source_is_none_for_other_whats():
+    assert sd.parse_sound_diffusion("*22*1#4#2*3#2#2##").source is None
+    assert sd.parse_sound_diffusion("*22*3#1*3#2#2##").source is None
+
+
+# --------------------------------------------------------------------------- #
+# Parsing: area and general commands
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_area_command():
+    event = sd.parse_sound_diffusion("*22*1#4#2*4#2##")
+    assert event == sd.AreaCommand(area=2, what=1, mmtype=4)
+    assert event.is_on is True
+
+
+def test_parse_area_command_off():
+    event = sd.parse_sound_diffusion("*22*0#4#0*4#3##")
+    assert event == sd.AreaCommand(area=3, what=0, mmtype=4)
+    assert event.is_on is False
+
+
+def test_parse_general_command():
+    event = sd.parse_sound_diffusion("*22*1#4#0*0##")
+    assert event == sd.GeneralCommand(what=1, mmtype=4, area_param=0)
+    assert event.is_on is True
+
+
+def test_parse_general_command_off():
+    event = sd.parse_sound_diffusion("*22*0#4#0*0##")
+    assert event == sd.GeneralCommand(what=0, mmtype=4, area_param=0)
+    assert event.is_on is False
+
+
+@pytest.mark.parametrize("raw", ["*22*3#1*4#2##", "*22*9*4#2##", "*22*3#1*0##", "*22*9*0##"])
+def test_parse_area_and_general_commands_only_handle_on_off(raw):
+    """Volume or station commands addressed to an area carry no state to reflect."""
+    assert sd.parse_sound_diffusion(raw) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -120,6 +172,11 @@ def test_parse_source_frequency_short_where():
 
 def test_parse_source_frequency_station():
     event = sd.parse_sound_diffusion("*#22*5#2#1*11*1*10600*14##")
+    assert event == sd.SourceFrequencyStation(source=1, modulation=1, frequency=10600, station=14)
+
+
+def test_parse_source_frequency_station_short_where():
+    event = sd.parse_sound_diffusion("*#22*2#1*11*1*10600*14##")
     assert event == sd.SourceFrequencyStation(source=1, modulation=1, frequency=10600, station=14)
 
 
@@ -167,6 +224,10 @@ def test_parse_capture_sequence_presets():
         # station arrive right after as dim 5/11/6 frames, so nothing to report.
         "*22*9*5#3#2#2##",
         "*22*10*5#3#2#2##",
+        # Echoes of our own dimension *writes*: `*#<dim>` is a write, not a value.
+        "*#22*3#2#2*#1*18##",
+        "*#22*5#2#1*#11*1*10600*14##",
+        "*#22*5#2#1*#5*1*10600##",
         # Other WHOs and garbage.
         "*1*1*77##",
         "*#4*1*0*0250##",
@@ -181,6 +242,21 @@ def test_parse_returns_none(raw):
 
 def test_parse_accepts_trailing_whitespace():
     assert sd.parse_sound_diffusion(" *#22*3#2#2*1*18## ") == sd.AmplifierVolume(area=2, point=2, volume=18)
+
+
+# --------------------------------------------------------------------------- #
+# Device id helper
+# --------------------------------------------------------------------------- #
+
+
+def test_amplifier_device_id():
+    assert sd.amplifier_device_id(2, 2) == "22-3#2#2"
+    assert sd.amplifier_device_id(7, 1) == "22-3#7#1"
+
+
+def test_amplifier_device_id_matches_the_parsed_event():
+    event = sd.parse_sound_diffusion("*#22*3#6#2*12*1*4##")
+    assert sd.amplifier_device_id(event.area, event.point) == "22-3#6#2"
 
 
 # --------------------------------------------------------------------------- #
@@ -263,11 +339,12 @@ def test_requests():
 def test_builders_round_trip_through_the_parser():
     """Every builder that produces an event-shaped frame must parse back."""
     assert sd.parse_sound_diffusion(sd.amplifier_on_simple(2, 2)) == sd.AmplifierCommand(
-        area=2, point=2, what=1, mmtype=4, area_param=2
+        area=2, point=2, what=1, params=(4, 2)
     )
     assert sd.parse_sound_diffusion(sd.amplifier_off_bus(2, 1)) == sd.AmplifierCommand(
-        area=2, point=1, what=0, mmtype=4, area_param=0
+        area=2, point=1, what=0, params=(4, 0)
     )
+    assert sd.parse_sound_diffusion(sd.amplifier_on(2, 2, source=1)).source == 1
     assert sd.parse_sound_diffusion(sd.volume_up(2, 2)).what == 3
 
 
@@ -299,6 +376,34 @@ def test_format_frequency():
     assert sd.format_frequency(9730) == "97.3 MHz"
     assert sd.format_frequency(8770) == "87.7 MHz"
     assert sd.format_frequency(10600, sd.MODULATION_FM) == "106.0 MHz"
+
+
+def test_format_frequency_keeps_two_decimals_when_needed():
+    assert sd.format_frequency(10245) == "102.45 MHz"
+    assert sd.format_frequency(10001) == "100.01 MHz"
+
+
+def test_format_frequency_is_khz_for_every_am_band():
+    assert sd.format_frequency(10600, sd.MODULATION_AM_LW) == "10600 kHz"
+    assert sd.format_frequency(10600, sd.MODULATION_AM_MW) == "10600 kHz"
+    assert sd.format_frequency(10600, sd.MODULATION_AM_SW) == "10600 kHz"
+
+
+def test_format_frequency_of_none():
+    assert sd.format_frequency(None) is None
+
+
+def test_station_name_with_a_custom_table():
+    table = {10600: "MA RADIO", 9010: "AUTRE"}
+    assert sd.station_name(10600, table) == "MA RADIO"
+    assert sd.station_name(10602, table) == "MA RADIO"
+    assert sd.station_name(9730, table) is None
+    # The built-in table is untouched by the override.
+    assert sd.station_name(9730) == "NOSTALGIE"
+
+
+def test_station_name_with_an_empty_table():
+    assert sd.station_name(10600, {}) is None
 
 
 def test_stations_table_is_consistent():

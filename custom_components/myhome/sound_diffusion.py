@@ -27,9 +27,11 @@ MAX_VOLUME = 31
 #: Multimedia type used by every command issued by this integration (stereo).
 MMTYPE_STEREO = 4
 
-#: Modulation values carried by dimensions 5 and 11.
+#: Modulation values carried by dimensions 5 and 11 (Legrand WHO_22 v1.1).
 MODULATION_FM = 1
-MODULATION_AM = 2
+MODULATION_AM_LW = 2
+MODULATION_AM_MW = 3
+MODULATION_AM_SW = 4
 
 #: Tolerance, in hundredths of MHz, when matching a frequency to a station name.
 STATION_MATCH_TOLERANCE = 5
@@ -76,6 +78,20 @@ STATIONS = {
 
 
 # --------------------------------------------------------------------------- #
+# Addressing
+# --------------------------------------------------------------------------- #
+
+
+def amplifier_device_id(area: int, point: int) -> str:
+    """Key an amplifier is stored under in ``hass.data``.
+
+    It has to match what ``validate.py`` builds out of the configuration file,
+    which is ``f"{who}-{where}"`` with the WHERE normalised to ``3#<area>#<point>``.
+    """
+    return f"22-3#{area}#{point}"
+
+
+# --------------------------------------------------------------------------- #
 # Events
 # --------------------------------------------------------------------------- #
 
@@ -105,13 +121,21 @@ class AmplifierCommand:
 
     Reflecting these lets an entity update immediately instead of waiting for the
     dimension 12 reply that the bus sends a moment later.
+
+    The WHAT parameters are kept raw in ``params`` because their meaning depends
+    on the WHAT: ``1#<mmtype>#<area>`` for on/off, ``3#<step>`` for volume,
+    ``35#<mmtype>#<area>#<source>`` for "on, on that source".
     """
 
     area: int
     point: int
     what: int
-    mmtype: Optional[int]
-    area_param: Optional[int]
+    params: tuple = ()
+
+    #: WHATs whose first parameter is the multimedia type.
+    _MMTYPE_WHATS = (0, 1, 2, 21, 34, 35)
+    #: WHATs whose first parameter is a volume step.
+    _STEP_WHATS = (3, 4)
 
     @property
     def is_on(self) -> Optional[bool]:
@@ -120,6 +144,34 @@ class AmplifierCommand:
             return True
         if self.what == 0:
             return False
+        return None
+
+    @property
+    def mmtype(self) -> Optional[int]:
+        """Multimedia type, when the WHAT carries one."""
+        if self.what in self._MMTYPE_WHATS and len(self.params) > 0:
+            return self.params[0]
+        return None
+
+    @property
+    def area_param(self) -> Optional[int]:
+        """Area repeated in the WHAT parameters (0 in the OFF frames of the bus)."""
+        if self.what in self._MMTYPE_WHATS and len(self.params) > 1:
+            return self.params[1]
+        return None
+
+    @property
+    def source(self) -> Optional[int]:
+        """Source selected by WHAT 35 (``35#<mmtype>#<area>#<source>``)."""
+        if self.what == 35 and len(self.params) > 2:
+            return self.params[2]
+        return None
+
+    @property
+    def step(self) -> Optional[int]:
+        """Volume step of WHAT 3 (up) and 4 (down)."""
+        if self.what in self._STEP_WHATS and len(self.params) > 0:
+            return self.params[0]
         return None
 
 
@@ -139,6 +191,44 @@ class SourceCommand:
     @property
     def is_on(self) -> Optional[bool]:
         if self.what in (1, 34, 35):
+            return True
+        if self.what == 0:
+            return False
+        return None
+
+
+@dataclass(frozen=True)
+class AreaCommand:
+    """``*22*<what>#<mmtype>#<area param>*4#<area>##`` — on/off for a whole area.
+
+    Only the on/off WHATs are modelled: a volume or station command addressed to
+    an area tells us nothing we can reflect without knowing each amplifier.
+    """
+
+    area: int
+    what: int
+    mmtype: Optional[int]
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        if self.what == 1:
+            return True
+        if self.what == 0:
+            return False
+        return None
+
+
+@dataclass(frozen=True)
+class GeneralCommand:
+    """``*22*<what>#<mmtype>#<area param>*0##`` — on/off for the whole installation."""
+
+    what: int
+    mmtype: Optional[int]
+    area_param: Optional[int]
+
+    @property
+    def is_on(self) -> Optional[bool]:
+        if self.what == 1:
             return True
         if self.what == 0:
             return False
@@ -194,6 +284,8 @@ SoundDiffusionEvent = Union[
     AmplifierState,
     AmplifierVolume,
     AmplifierCommand,
+    AreaCommand,
+    GeneralCommand,
     SourceCommand,
     SourceRouted,
     SourceFrequency,
@@ -203,6 +295,7 @@ SoundDiffusionEvent = Union[
 ]
 
 AMPLIFIER_EVENTS = (AmplifierState, AmplifierVolume, AmplifierCommand)
+BROADCAST_EVENTS = (AreaCommand, GeneralCommand)
 SOURCE_EVENTS = (
     SourceCommand,
     SourceRouted,
@@ -235,10 +328,16 @@ _SOURCE_STATION = re.compile(rf"^\*#22\*{_SOURCE}\*6\*(?P<station>\d+)##$")
 _SOURCE_ROUTED = re.compile(r"^\*22\*(?:2|21)#(?P<mmtype>\d+)#(?P<area>\d+)\*5#2#(?P<source>\d+)##$")
 _SOURCE_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*2#(?P<source>\d+)##$")
 
+_AREA_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*4#(?P<area>\d+)##$")
+_GENERAL_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*0##$")
 
-def _what_params(raw: str) -> list:
-    """Split a ``#a#b`` WHAT/WHERE parameter suffix into a list of ints."""
-    return [int(_part) for _part in raw.split("#") if _part != ""]
+#: WHATs an area or general command is reflected for: only on/off tell us a state.
+_BROADCAST_WHATS = (0, 1)
+
+
+def _what_params(raw: str) -> tuple:
+    """Split a ``#a#b`` WHAT parameter suffix into a tuple of ints."""
+    return tuple(int(_part) for _part in raw.split("#") if _part != "")
 
 
 def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
@@ -273,13 +372,11 @@ def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
 
     _match = _AMPLIFIER_COMMAND.match(raw)
     if _match:
-        _params = _what_params(_match.group("what_param"))
         return AmplifierCommand(
             area=int(_match.group("area")),
             point=int(_match.group("point")),
             what=int(_match.group("what")),
-            mmtype=_params[0] if len(_params) > 0 else None,
-            area_param=_params[1] if len(_params) > 1 else None,
+            params=_what_params(_match.group("what_param")),
         )
 
     _match = _SOURCE_STATE.match(raw)
@@ -332,6 +429,24 @@ def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
             area_param=_params[1] if len(_params) > 1 else None,
         )
 
+    _match = _AREA_COMMAND.match(raw)
+    if _match and int(_match.group("what")) in _BROADCAST_WHATS:
+        _params = _what_params(_match.group("what_param"))
+        return AreaCommand(
+            area=int(_match.group("area")),
+            what=int(_match.group("what")),
+            mmtype=_params[0] if len(_params) > 0 else None,
+        )
+
+    _match = _GENERAL_COMMAND.match(raw)
+    if _match and int(_match.group("what")) in _BROADCAST_WHATS:
+        _params = _what_params(_match.group("what_param"))
+        return GeneralCommand(
+            what=int(_match.group("what")),
+            mmtype=_params[0] if len(_params) > 0 else None,
+            area_param=_params[1] if len(_params) > 1 else None,
+        )
+
     return None
 
 
@@ -375,20 +490,28 @@ def volume_set(area: int, point: int, volume: int) -> str:
 
 
 def station_next(source: int = 1) -> str:
-    """Next station, spec form. Rejected by ``OWNCommand.is_valid`` (trailing ``#``)."""
+    """Next station, spec form (§3.1.5).
+
+    Not yet confirmed on hardware; the bus-observed form ``*22*9*5#3#a#p##``
+    (:func:`station_next_from_amplifier`) is used by default.
+    """
     return f"*22*9#*2#{source}##"
 
 
 def station_previous(source: int = 1) -> str:
-    """Previous station, spec form. Rejected by ``OWNCommand.is_valid``."""
+    """Previous station, spec form (§3.1.5).
+
+    Not yet confirmed on hardware; the bus-observed form ``*22*10*5#3#a#p##``
+    (:func:`station_previous_from_amplifier`) is used by default.
+    """
     return f"*22*10#*2#{source}##"
 
 
 def station_next_from_amplifier(area: int, point: int) -> str:
     """Next station, addressed as general with the amplifier as emitter.
 
-    This is the form the wall command emitted on the bus, and unlike the spec
-    form it is accepted by OWNd's own validator.
+    This is the form the wall command emitted on the bus, so it is the one this
+    integration sends.
     """
     return f"*22*9*5#3#{area}#{point}##"
 
@@ -398,11 +521,15 @@ def station_previous_from_amplifier(area: int, point: int) -> str:
 
 
 def frequency_seek_up(source: int = 1, step: Optional[int] = None) -> str:
-    """Seek up, automatically (``step`` omitted) or by a given frequency step."""
+    """Seek up, automatically (``step`` omitted) or by a given frequency step.
+
+    Spec form (§3.1.5), not yet confirmed on hardware.
+    """
     return f"*22*5#{step if step is not None else ''}*2#{source}##"
 
 
 def frequency_seek_down(source: int = 1, step: Optional[int] = None) -> str:
+    """Seek down. Spec form (§3.1.5), not yet confirmed on hardware."""
     return f"*22*6#{step if step is not None else ''}*2#{source}##"
 
 
@@ -442,13 +569,20 @@ def request_global_status(source: int = 1) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def station_name(frequency: Optional[int]) -> Optional[str]:
-    """Name of the station broadcasting at ``frequency`` (hundredths of MHz)."""
+def station_name(frequency: Optional[int], table: Optional[dict] = None) -> Optional[str]:
+    """Name of the station broadcasting at ``frequency`` (hundredths of MHz).
+
+    ``table`` maps a frequency in hundredths of MHz to a station name; it
+    defaults to the built-in FM band around Bordeaux. A gateway can override it
+    through the ``radio_stations`` option of the configuration file.
+    """
     if frequency is None:
         return None
+    if table is None:
+        table = STATIONS
     _best = None
     _best_distance = STATION_MATCH_TOLERANCE + 1
-    for _frequency, _name in STATIONS.items():
+    for _frequency, _name in table.items():
         _distance = abs(_frequency - frequency)
         if _distance <= STATION_MATCH_TOLERANCE and _distance < _best_distance:
             _best = _name
@@ -457,12 +591,16 @@ def station_name(frequency: Optional[int]) -> Optional[str]:
 
 
 def format_frequency(frequency: Optional[int], modulation: int = MODULATION_FM) -> Optional[str]:
-    """Human readable frequency, e.g. ``106.0 MHz``.
+    """Human readable frequency, e.g. ``106.0 MHz`` or ``102.45 MHz``.
 
-    The AM branch is unverified: the installation only has an FM tuner.
+    FM frequencies are carried in hundredths of MHz; a trailing zero is dropped
+    so the common case reads ``106.0 MHz`` rather than ``106.00 MHz``. Every
+    other modulation is an AM band, whose values are kHz. The AM branch is
+    unverified: the installation only has an FM tuner.
     """
     if frequency is None:
         return None
-    if modulation == MODULATION_AM:
+    if modulation != MODULATION_FM:
         return f"{frequency} kHz"
-    return f"{frequency / 100:.1f} MHz"
+    _decimals = 1 if frequency % 10 == 0 else 2
+    return f"{frequency / 100:.{_decimals}f} MHz"
