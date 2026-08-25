@@ -38,13 +38,28 @@ class Entity:
     """Stand-in for `homeassistant.helpers.entity.Entity`."""
 
     _attr_should_poll = True
+    _attr_available = True
+    #: Home Assistant sets both when the entity is added to a platform; until
+    #: then writing a state raises, exactly as the real class does.
+    hass = None
+    entity_id = None
     #: A class attribute: `MyHOMEEntity.__init__` never calls `super().__init__`.
     written_states = 0
 
+    @property
+    def available(self):
+        return self._attr_available
+
+    def _assert_added(self):
+        if self.hass is None:
+            raise RuntimeError(f"Attribute hass is None for {type(self).__name__}")
+
     def async_write_ha_state(self):
+        self._assert_added()
         self.written_states = self.written_states + 1
 
     def async_schedule_update_ha_state(self, force_refresh=False):
+        self._assert_added()
         self.written_states = self.written_states + 1
 
 

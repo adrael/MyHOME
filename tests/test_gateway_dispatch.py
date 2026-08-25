@@ -130,6 +130,9 @@ class Installation:
                 model=None,
                 gateway=self.handler,
             )
+            # What `async_added_to_hass` does: register the entity and let it
+            # write states.
+            _entity.hass = self
             _device[const.CONF_ENTITIES]["media_player"] = _entity
             self.entities[_device_id] = _entity
 
@@ -424,26 +427,75 @@ def test_each_source_is_asked_for_once():
     assert len(_requests) == 24
 
 
-def test_an_entity_is_unavailable_until_a_frame_comes_back(installation):
-    """Entities are added before the listener connects, and nothing re-writes them.
+# --------------------------------------------------------------------------- #
+# Connection state
+# --------------------------------------------------------------------------- #
 
-    `async_forward_entry_setups` runs before the listening worker is created, so
-    every amplifier writes "unavailable" on its first state write. Only an
-    inbound WHO=22 frame clears it: connecting the listener is not, by itself,
-    something the entities are told about.
+
+def test_connecting_and_disconnecting_writes_every_amplifier_state(installation):
+    """`available` is the gateway connection, so only the gateway can refresh it.
+
+    Entities are added before the listening worker is created
+    (`async_forward_entry_setups` is awaited first in `__init__.py`), so they
+    write "unavailable" on their first state write and nothing but the gateway
+    can clear it.
     """
+    installation.handler._set_connected(False)
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+        assert _entity.available is False
+
+    installation.handler._set_connected(True)
+    assert all(_entity.available is True for _entity in installation.entities.values())
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+
+    installation.handler._set_connected(False)
+    assert all(_entity.available is False for _entity in installation.entities.values())
+    assert all(_entity.written_states == 2 for _entity in installation.entities.values())
+
+
+def test_a_connection_state_that_does_not_change_writes_nothing(installation):
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.handler._set_connected(True)
+
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+
+def test_an_entity_not_yet_added_to_hass_is_not_written(installation):
+    """`async_write_ha_state` raises before Home Assistant has added the entity."""
     _entity = installation.entity(2, 2)
-    installation.handler.is_connected = False
+    _entity.hass = None
 
-    asyncio.run(_entity.async_update())
-    _written = _entity.written_states
+    installation.handler._set_connected(False)
 
-    installation.handler.is_connected = True
-    assert _entity.written_states == _written, "connecting does not refresh the entities"
-    assert _entity.available is True
+    assert _entity.written_states == 0
+    assert installation.entity(7, 1).written_states == 1
 
-    # In practice the state comes back with the answer to the status request.
-    assert installation.handler.status_requests[0] == "*#22*3#2#2*12##"
-    installation.handler.handle_sound_diffusion("*#22*3#2#2*12*1*4##")
-    assert _entity.written_states == _written + 1
-    assert _entity.state == PLAYING
+
+def test_the_connection_state_survives_an_unloaded_config_entry(installation):
+    del installation.data[DOMAIN][MAC]
+    installation.handler._set_connected(False)
+
+
+def test_a_reconnection_asks_every_amplifier_and_the_tuner_again(installation):
+    """The bus lived on without us: what we know is stale, so ask again."""
+
+    async def _update_every_amplifier():
+        for _entity in installation.entities.values():
+            await _entity.async_update()
+
+    asyncio.run(_update_every_amplifier())
+    _booted = len(installation.handler.status_requests)
+    assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
+
+    installation.handler._set_connected(False)
+    asyncio.run(installation.handler.reconnected())
+
+    _after = installation.handler.status_requests[_booted:]
+    assert installation.handler.is_connected is True
+    assert _after.count("*#22*5#2#1*11##") == 1, "the shared tuner is asked for again"
+    for _area, _point, _ in AMPLIFIERS:
+        assert _after.count(f"*#22*3#{_area}#{_point}*12##") == 1
+        assert _after.count(f"*#22*3#{_area}#{_point}*1##") == 1

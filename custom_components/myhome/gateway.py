@@ -62,6 +62,7 @@ from .const import (
     CONF_LONG_RELEASE,
     CONF_SOUND_SOURCES,
     CONF_SOURCE,
+    CONF_TUNER_REQUESTED,
     CONF_WHERE,
     DOMAIN,
     LOGGER,
@@ -151,11 +152,22 @@ class MyHOMEGatewayHandler:
 
         _event_session = OWNEventSession(gateway=self.gateway, logger=LOGGER)
         await _event_session.connect()
-        self.is_connected = True
+        self._set_connected(True)
 
         while not self._terminate_listener:
             message = await _event_session.get_next()
             LOGGER.debug("%s Message received: `%s`", self.log_id, message)
+
+            if message is None:
+                # `OWNEventSession.get_next` answers `None` for every failure it
+                # meets, having reconnected itself on an interrupted read. The
+                # socket is gone until a frame proves otherwise.
+                self._set_connected(False)
+                continue
+
+            if not self.is_connected:
+                # A frame came through: the session is alive again.
+                await self.reconnected()
 
             if self.generate_events:
                 if isinstance(message, OWNMessage):
@@ -396,10 +408,60 @@ class MyHOMEGatewayHandler:
                 )
 
         await _event_session.close()
-        self.is_connected = False
+        self._set_connected(False)
 
         LOGGER.debug("%s Destroying listening worker.", self.log_id)
         self.listening_worker.cancel()
+
+    def _amplifier_entities(self):
+        """Every `media_player` entity of this gateway that hass already knows.
+
+        Only that platform is walked: `available` of the other platforms does
+        not follow the connection, and writing them would change their
+        behaviour.
+        """
+        _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
+        if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
+            return
+        for _device in _gateway_data[CONF_PLATFORMS].get(MEDIA_PLAYER, {}).values():
+            for _entity in _device[CONF_ENTITIES].values():
+                # `hass` is set when the entity is added to a platform; writing
+                # a state before that raises.
+                if isinstance(_entity, MyHOMEEntity) and getattr(_entity, "hass", None) is not None:
+                    yield _entity
+
+    def _set_connected(self, is_connected: bool) -> None:
+        """Record the connection state and refresh the amplifiers.
+
+        An amplifier's `available` is this very flag, and no other code path
+        writes those entities when the gateway comes and goes.
+        """
+        if self.is_connected == is_connected:
+            return
+
+        self.is_connected = is_connected
+        for _entity in self._amplifier_entities():
+            _entity.async_write_ha_state()
+
+    async def reconnected(self) -> None:
+        """Catch up with a bus that went on living while we were not listening.
+
+        Everything we hold about the amplifiers and the tuner dates from before
+        the outage, so it is all asked for again. The tuner is guarded by a flag
+        set on its first request, which has to be cleared for the amplifiers to
+        ask a second time.
+        """
+        self._set_connected(True)
+
+        _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
+        if _gateway_data is None:
+            return
+
+        for _source in _gateway_data.get(CONF_SOUND_SOURCES, {}).values():
+            _source.pop(CONF_TUNER_REQUESTED, None)
+
+        for _entity in self._amplifier_entities():
+            await _entity.async_update()
 
     def handle_sound_diffusion(self, raw_message: str) -> None:
         """Dispatch a WHO=22 frame to the relevant media_player entities."""

@@ -23,6 +23,7 @@ from .const import (
     CONF_RADIO_STATIONS,
     CONF_SOURCE,
     CONF_SOUND_SOURCES,
+    CONF_TUNER_REQUESTED,
     CONF_WHO,
     CONF_WHERE,
     CONF_MANUFACTURER,
@@ -54,10 +55,6 @@ from .sound_diffusion import (
     volume_set,
     volume_up,
 )
-
-#: Key marking a source whose tuning has already been asked for. One request per
-#: source and per gateway is enough, however many amplifiers listen to it.
-TUNER_REQUESTED = "requested"
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -245,10 +242,10 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         await self._gateway_handler.send_status_request(OWNCommand(request_amplifier_volume(self._area, self._point)))
 
         _tuner = self._tuner
-        if not _tuner.get(TUNER_REQUESTED):
+        if not _tuner.get(CONF_TUNER_REQUESTED):
             # Flagged before the first `await` so the eleven amplifiers being
             # added to hass cannot interleave and all ask for the same tuning.
-            _tuner[TUNER_REQUESTED] = True
+            _tuner[CONF_TUNER_REQUESTED] = True
             await self._gateway_handler.send_status_request(OWNCommand(request_source_frequency_station(self._source)))
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
