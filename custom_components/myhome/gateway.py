@@ -503,10 +503,8 @@ class MyHOMEGatewayHandler:
             self.update_sound_source(_event)
             _devices = [_device for _device in _configured_amplifiers.values() if _device[CONF_SOURCE] == _event.source]
         elif isinstance(_event, BROADCAST_EVENTS):
-            _area = getattr(_event, "area", None)
-            _devices = [
-                _device for _device in _configured_amplifiers.values() if _area is None or _device[CONF_WHERE].startswith(f"3#{_area}#")
-            ]
+            # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
+            _devices = [_device for _device in _configured_amplifiers.values() if int(_device[CONF_WHERE].split("#")[1]) == _event.area]
         else:
             return
 

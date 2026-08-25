@@ -120,21 +120,33 @@ def test_parse_area_command_off():
     assert event.is_on is False
 
 
-def test_parse_general_command():
-    event = sd.parse_sound_diffusion("*22*1#4#0*0##")
-    assert event == sd.GeneralCommand(what=1, mmtype=4, area_param=0)
-    assert event.is_on is True
-
-
-def test_parse_general_command_off():
-    event = sd.parse_sound_diffusion("*22*0#4#0*0##")
-    assert event == sd.GeneralCommand(what=0, mmtype=4, area_param=0)
-    assert event.is_on is False
-
-
-@pytest.mark.parametrize("raw", ["*22*3#1*4#2##", "*22*9*4#2##", "*22*3#1*0##", "*22*9*0##"])
-def test_parse_area_and_general_commands_only_handle_on_off(raw):
+@pytest.mark.parametrize("raw", ["*22*3#1*4#2##", "*22*9*4#2##", "*22*22#1*4#2##"])
+def test_parse_area_command_only_handles_on_off(raw):
     """Volume or station commands addressed to an area carry no state to reflect."""
+    assert sd.parse_sound_diffusion(raw) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "*22*0*4#2##",  # no parameters at all
+        "*22*1*4#2##",
+        "*22*1#4*4#2##",  # multimedia type only
+        "*22*0#4#0#1*4#2##",  # one parameter too many
+    ],
+)
+def test_parse_area_command_requires_the_full_parameter_form(raw):
+    """`<what>#<mmtype>#<area>` is what the spec table shows; anything else is not it.
+
+    A bare `*22*0*4#2##` would otherwise turn a whole area off on a frame whose
+    meaning we do not know.
+    """
+    assert sd.parse_sound_diffusion(raw) is None
+
+
+@pytest.mark.parametrize("raw", ["*22*1#4#0*0##", "*22*0#4#0*0##", "*22*0*0##"])
+def test_a_general_command_is_not_modelled(raw):
+    """WHERE `0` is not a sound diffusion address: general is `5#<sender>`."""
     assert sd.parse_sound_diffusion(raw) is None
 
 

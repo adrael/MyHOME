@@ -252,12 +252,22 @@ def test_an_area_command_reaches_the_amplifiers_of_that_area(installation):
     assert installation.entity(7, 1).state == PLAYING
 
 
-def test_a_general_command_reaches_every_amplifier(installation):
-    installation.handler.handle_sound_diffusion("*22*1#4#0*0##")
-    assert all(_entity.state == PLAYING for _entity in installation.entities.values())
+def test_an_area_command_matches_the_area_as_a_number(installation):
+    """`3#1#1` belongs to area 1, not to area 11."""
+    installation.replay(["*#22*3#1#1*12*1*4##"])
+
+    installation.handler.handle_sound_diffusion("*22*0#4#0*4#11##")
+
+    assert installation.entity(1, 1).state == PLAYING
+
+
+def test_a_general_command_is_ignored(installation):
+    """WHERE `0` is not a sound diffusion address, so nothing is turned off."""
+    installation.replay(["*#22*3#5#1*12*1*4##"])
 
     installation.handler.handle_sound_diffusion("*22*0#4#0*0##")
-    assert all(_entity.state == OFF for _entity in installation.entities.values())
+
+    assert installation.entity(5, 1).state == PLAYING
 
 
 def test_an_event_for_an_unconfigured_amplifier_is_ignored(installation):

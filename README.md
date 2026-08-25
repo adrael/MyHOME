@@ -155,11 +155,10 @@ behave differently, or not at all.
 - **The spec form of the station commands** (`*22*9#*2#<source>##`). The
   integration sends the observed `*22*9*5#3#<area>#<point>##` instead.
 - **AM display.** Any modulation other than FM is printed in kHz, untested.
-- **Area and general commands.** `*22*<what>#<mm>#<a>*4#<area>##` and
-  `*22*<what>#<mm>#<a>*0##` are read as "turn this area on/off" and "turn
-  everything on/off" and are reflected on the amplifiers they address, all of
-  them in the general case. Neither was seen on the bus; if the frames mean
-  something else, a single frame flips the state of every amplifier at once.
+- **Area commands.** `*22*<what>#<mm>#<a>*4#<area>##` is read as "turn this
+  area on/off" and reflected on the amplifiers of that area. The spec lists the
+  address, no command session uses it and it was never seen on the bus; the
+  amplifiers report their own state a moment later either way.
 - **Setting a frequency** has no dedicated service. The existing
   `myhome.send_message` service can write dimension 11 on a source:
 

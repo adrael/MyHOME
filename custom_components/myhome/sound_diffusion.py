@@ -201,38 +201,24 @@ class SourceCommand:
 class AreaCommand:
     """``*22*<what>#<mmtype>#<area param>*4#<area>##`` — on/off for a whole area.
 
+    The spec table (§2.3) lists ``4#<area>`` as a WHERE; no command session of
+    chapter 3 uses it and it was never observed on the bus. It is kept because
+    the blast radius is one area and the dimension 12 events of each amplifier
+    follow within a moment, correcting whatever we got wrong.
+
     Only the on/off WHATs are modelled: a volume or station command addressed to
-    an area tells us nothing we can reflect without knowing each amplifier.
+    an area tells us nothing we can reflect without knowing each amplifier. The
+    two WHAT parameters are mandatory, so a frame we cannot read in full never
+    flips a whole area.
     """
 
     area: int
     what: int
-    mmtype: Optional[int]
+    mmtype: int
 
     @property
-    def is_on(self) -> Optional[bool]:
-        if self.what == 1:
-            return True
-        if self.what == 0:
-            return False
-        return None
-
-
-@dataclass(frozen=True)
-class GeneralCommand:
-    """``*22*<what>#<mmtype>#<area param>*0##`` — on/off for the whole installation."""
-
-    what: int
-    mmtype: Optional[int]
-    area_param: Optional[int]
-
-    @property
-    def is_on(self) -> Optional[bool]:
-        if self.what == 1:
-            return True
-        if self.what == 0:
-            return False
-        return None
+    def is_on(self) -> bool:
+        return self.what == 1
 
 
 @dataclass(frozen=True)
@@ -285,7 +271,6 @@ SoundDiffusionEvent = Union[
     AmplifierVolume,
     AmplifierCommand,
     AreaCommand,
-    GeneralCommand,
     SourceCommand,
     SourceRouted,
     SourceFrequency,
@@ -295,7 +280,7 @@ SoundDiffusionEvent = Union[
 ]
 
 AMPLIFIER_EVENTS = (AmplifierState, AmplifierVolume, AmplifierCommand)
-BROADCAST_EVENTS = (AreaCommand, GeneralCommand)
+BROADCAST_EVENTS = (AreaCommand,)
 SOURCE_EVENTS = (
     SourceCommand,
     SourceRouted,
@@ -328,11 +313,9 @@ _SOURCE_STATION = re.compile(rf"^\*#22\*{_SOURCE}\*6\*(?P<station>\d+)##$")
 _SOURCE_ROUTED = re.compile(r"^\*22\*(?:2|21)#(?P<mmtype>\d+)#(?P<area>\d+)\*5#2#(?P<source>\d+)##$")
 _SOURCE_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*2#(?P<source>\d+)##$")
 
-_AREA_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*4#(?P<area>\d+)##$")
-_GENERAL_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*0##$")
-
-#: WHATs an area or general command is reflected for: only on/off tell us a state.
-_BROADCAST_WHATS = (0, 1)
+#: Only on/off, and only in the full ``<what>#<mmtype>#<area>`` parameter form:
+#: a frame we cannot read in full must not turn a whole area off.
+_AREA_COMMAND = re.compile(r"^\*22\*(?P<what>[01])#(?P<mmtype>\d+)#(?P<area_param>\d+)\*4#(?P<area>\d+)##$")
 
 
 def _what_params(raw: str) -> tuple:
@@ -430,21 +413,11 @@ def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
         )
 
     _match = _AREA_COMMAND.match(raw)
-    if _match and int(_match.group("what")) in _BROADCAST_WHATS:
-        _params = _what_params(_match.group("what_param"))
+    if _match:
         return AreaCommand(
             area=int(_match.group("area")),
             what=int(_match.group("what")),
-            mmtype=_params[0] if len(_params) > 0 else None,
-        )
-
-    _match = _GENERAL_COMMAND.match(raw)
-    if _match and int(_match.group("what")) in _BROADCAST_WHATS:
-        _params = _what_params(_match.group("what_param"))
-        return GeneralCommand(
-            what=int(_match.group("what")),
-            mmtype=_params[0] if len(_params) > 0 else None,
-            area_param=_params[1] if len(_params) > 1 else None,
+            mmtype=int(_match.group("mmtype")),
         )
 
     return None

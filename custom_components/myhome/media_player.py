@@ -40,7 +40,6 @@ from .sound_diffusion import (
     AmplifierState,
     AmplifierVolume,
     AreaCommand,
-    GeneralCommand,
     SoundDiffusionEvent,
     amplifier_off_bus,
     amplifier_on_simple,
@@ -306,7 +305,7 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
             self._attr_state = MediaPlayerState.PLAYING if message.is_on else MediaPlayerState.OFF
         elif isinstance(message, AmplifierVolume):
             self._set_raw_volume(message.volume)
-        elif isinstance(message, (AmplifierCommand, AreaCommand, GeneralCommand)):
+        elif isinstance(message, (AmplifierCommand, AreaCommand)):
             if message.is_on is not None:
                 self._attr_state = MediaPlayerState.PLAYING if message.is_on else MediaPlayerState.OFF
 
