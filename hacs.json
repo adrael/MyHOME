@@ -1,7 +1,6 @@
 {
-  "name": "MyHOME (adrael fork, WHO=22 sound diffusion)",
-  "zip_release": true,
-  "filename": "myhome.zip",
+  "name": "MyHOME (adrael fork)",
+  "zip_release": false,
   "country": [
     "GB",
     "FR",
