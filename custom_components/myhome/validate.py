@@ -44,6 +44,7 @@ from .const import (
     CONF_ICON_ON,
     CONF_ZONE,
     CONF_SOURCE,
+    CONF_RADIO_STATIONS,
     CONF_FAN_SUPPORT,
     CONF_MANUFACTURER,
     CONF_DEVICE_MODEL,
@@ -160,34 +161,46 @@ class SpecialWhere(object):
 
 
 class Amplifier(object):
-    """Sound diffusion amplifier WHERE: `3#<area>#<point>`, or the short `<area>#<point>`."""
+    """Sound diffusion amplifier WHERE, `3#<area>#<point>`.
 
-    def __init__(self, msg=None):
-        self.msg = msg
+    The leading `3` is mandatory: a short `<area>#<point>` form would be too easy
+    to confuse with the point-to-point WHERE of the other platforms.
+    """
 
     def __call__(self, v):
         if type(v) == str:
             _parts = v.split("#")
-            if len(_parts) == 3 and _parts[0] == "3":
-                _area, _point = _parts[1], _parts[2]
-            elif len(_parts) == 2:
-                _area, _point = _parts[0], _parts[1]
-            else:
-                _area, _point = None, None
-            if (
-                _area is not None
-                and _area.isdigit()
-                and _point.isdigit()
-                and int(_area) >= 0
-                and int(_area) <= 9
-                and int(_point) >= 0
-                and int(_point) <= 9
-            ):
-                return f"3#{int(_area)}#{int(_point)}"
-        raise Invalid(f"Invalid Sound Diffusion WHERE {v}, it must be a string like '3#<area>#<point>' with area and point in [0-9].")
+            if len(_parts) == 3 and _parts[0] == "3" and _parts[1].isdigit() and _parts[2].isdigit():
+                _area, _point = int(_parts[1]), int(_parts[2])
+                if 1 <= _area <= 9 and 1 <= _point <= 9:
+                    return f"3#{_area}#{_point}"
+        raise Invalid(f"Invalid Sound Diffusion WHERE {v}, it must be a string like '3#<area>#<point>' with area and point in [1-9].")
 
     def __repr__(self):
-        return "Where(%s, msg=%r)" % ("String", self.msg)
+        return "Amplifier()"
+
+
+class RadioStations(object):
+    """Station table override: `{"106.0": "SUD RADIO"}`, keyed by frequency in MHz.
+
+    Frequencies are rekeyed to hundredths of MHz, the unit the bus uses and the
+    one `sound_diffusion.station_name` matches against.
+    """
+
+    def __call__(self, v):
+        if not isinstance(v, dict):
+            raise Invalid(f"Invalid radio stations table {v}, it must be a mapping of frequencies in MHz to station names.")
+        _table = {}
+        for _frequency, _name in v.items():
+            try:
+                _key = int(round(float(_frequency) * 100))
+            except (TypeError, ValueError):
+                raise Invalid(f"Invalid radio station frequency {_frequency}, it must be a frequency in MHz like '106.0'.") from None
+            _table[_key] = str(_name)
+        return _table
+
+    def __repr__(self):
+        return "RadioStations()"
 
 
 class BusInterface(object):
@@ -214,8 +227,14 @@ class MyHomeConfigSchema(Schema):
             _rekeyed_data[data[gateway][CONF_MAC]] = {}
             _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS] = {}
             for platform in data[gateway]:
-                if platform != CONF_MAC:
-                    _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][platform] = data[gateway][platform]
+                if platform == CONF_MAC:
+                    continue
+                if platform == CONF_RADIO_STATIONS:
+                    # A gateway wide option, not a platform: `__init__.py` forwards
+                    # every key of CONF_PLATFORMS to `async_forward_entry_setups`.
+                    _rekeyed_data[data[gateway][CONF_MAC]][CONF_RADIO_STATIONS] = data[gateway][platform]
+                    continue
+                _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][platform] = data[gateway][platform]
 
             if (
                 (LIGHT in _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS])
@@ -462,8 +481,8 @@ media_player_schema = MyHomeDeviceSchema(
             Required(CONF_WHERE): All(Coerce(str), Amplifier(), msg="Invalid <WHERE>, expecting a valid Sound Diffusion amplifier <WHERE>"),
             Required(CONF_NAME): str,
             Optional(CONF_ENTITY_NAME): str,
-            Optional(CONF_SOURCE, default=1): All(Coerce(int), Range(min=1, max=9)),
-            Optional(CONF_ICON, default="mdi:speaker"): str,
+            Optional(CONF_SOURCE, default=1): All(Coerce(int), Range(min=1, max=4)),
+            Optional(CONF_ICON): str,
             Optional(CONF_MANUFACTURER, default="BTicino S.p.A."): str,
             Optional(CONF_DEVICE_MODEL): Coerce(str),
         }
@@ -480,6 +499,7 @@ gateway_schema = Schema(
         Optional(SENSOR): sensor_schema,
         Optional(CLIMATE): climate_schema,
         Optional(MEDIA_PLAYER): media_player_schema,
+        Optional(CONF_RADIO_STATIONS): RadioStations(),
     }
 )
 
