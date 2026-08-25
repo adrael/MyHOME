@@ -25,7 +25,9 @@ This fork adds a `media_player` platform for MyHOME sound diffusion amplifiers.
 Each amplifier becomes one `media_player` entity supporting on/off, volume set
 and volume step, and next/previous station.
 
-Requires Home Assistant 2024.10 or later.
+The integration needs Home Assistant 2024.3 or later. The example dashboard
+needs 2025.1 or later (the `media-player-volume-slider` tile feature);
+`show_mute_button` only matters on 2026.6 and above.
 
 All amplifiers of an installation usually share the same source (a single tuner),
 so changing station on one amplifier changes it for all of them. The integration
@@ -120,8 +122,9 @@ What comes out of *this* amplifier is a different matter: `media_title`,
   bus has one tuner.
 - **Volume is a 0-31 integer**, so the slider moves in 32 steps. Home Assistant's
   0..1 level is rounded to the nearest of them.
-- **No mute, no pause, no source selection.** The amplifiers of this
-  installation expose none of it; only on/off, volume and station.
+- **No mute, no pause, no source selection.** The integration offers on/off,
+  volume and station, and nothing else. Selecting a source does work on the bus
+  (WHAT 35, see below); it is simply not exposed as a feature.
 - **Entity ids** come from the device name, as usual: `name: "Radio Cuisine"`
   gives `media_player.radio_cuisine`.
 - **The state is `playing`, not `on`.** A media player that reports `on` gets
@@ -151,44 +154,64 @@ media_player:
 
 [`examples/dashboard-radios.yaml`](examples/dashboard-radios.yaml) is a ready to
 paste "Radios" view: the shared tuner at the top with its two station buttons,
-then one section per room with a volume slider and, where a room holds two
-amplifiers, a pair of on/off buttons — plus a "turn every amplifier off" button.
+then one section per room with a volume slider and a pair of on/off buttons —
+plus a "turn every amplifier off" button. Every room gets the pair: tapping a
+tile's icon does not toggle a media player.
 
 Paste the `- title: Radios` item into the `views:` list of your own dashboard
 (raw configuration editor) rather than over the whole file, and adapt the entity
 ids to your own `name:` values. The station buttons address the kitchen
 amplifier and nothing else, for the reason given just above.
 
+### Verified on hardware
+
+One session against the installation this fork was written for (gateway F454,
+amplifier `3#2#2`, FM tuner `2#1`, 2026-08-25) put every frame the integration
+sends on the bus, and both forms of the commands that had two:
+
+| Frame | What the bus did |
+| ----- | ---------------- |
+| `*22*1#4#<a>*3#<a>#<p>##` — turn on | on; dimension 12 and the volume follow within ~150 ms |
+| `*22*0#4#<a>*3#<a>#<p>##` — turn off, spec form | off (`*12*0*10`) |
+| `*22*0#4#0*3#<a>#<p>##` — turn off, wall form | off, exactly the same |
+| `*#22*3#<a>#<p>*#1*<v>##` — set volume | **absolute**: 10 then 14 leaves it on 14, not 24; echoed within ~150 ms, which is all the optimistic write hides |
+| `*22*9#*2#<s>##`, `*22*10#*2#<s>##` — station ± | the tuner moves; dimensions 5, 11 and 6 follow within ~200 ms |
+| `*22*9*5#3#<a>#<p>##` — station +, wall form | moves it too |
+| `*22*35#4#<a>#<s>*3#<a>#<p>##` — on, on that source | on; two routing events follow |
+| `*#22*3#<a>#<p>*12##`, `*#22*3#<a>#<p>*1##`, `*#22*5#2#<s>*11##` — requests | answered, **even with the amplifier off** |
+
+Two consequences worth knowing:
+
+- **Every command comes back from the bus in under 300 ms**, carrying its new
+  value. Whatever an amplifier says after a command is therefore what it is
+  doing now — a wall switch pressed a tenth of a second later is applied, not
+  taken for a late echo.
+- **A request addressed to one source is answered by all of them.** Sources 2 to
+  4 exist on this bus and are tuned to something; the amplifiers listening to
+  source 1 ignore what they say.
+
+The station commands the integration sends (`*22*9#*2#<source>##` and its
+previous) end on an empty WHAT parameter. OWNd builds the frame but marks it
+invalid, and the `myhome.send_message` service refuses what is marked invalid:
+these two cannot be sent by hand through that service, only by the entity.
+
 ### Experimental / not verified on hardware
 
-Everything below is built from the Legrand WHO=22 specification and was never
-seen on the bus of the installation this fork was developed against. It may
-behave differently, or not at all.
+The following was built from the Legrand WHO=22 specification and never seen on
+that bus. It may behave differently, or not at all.
 
-- **`volume_set`** writes dimension 1 (`*#22*3#<a>#<p>*#1*<volume>##`). Only the
-  relative steps (WHAT 3 and 4) were observed; the write is not echoed back as
-  an event, which is why the entity updates optimistically.
-- **WHAT 35** (`amplifier_on`, "turn on and select that source"). The
-  integration sends the observed WHAT 1 form instead.
-- **The spec form of the station and seek commands** (`*22*9#*2#<source>##`,
-  `*22*5#*2#<source>##`). They end on an empty WHAT parameter, which OWNd builds
-  but marks invalid; nothing reads that mark before sending, so
-  `myhome.send_message` does put them on the bus — what the gateway makes of
-  them is the unknown. The integration sends the observed
-  `*22*9*5#3#<area>#<point>##` instead, which is itself a frame that was
-  captured going the other way: the wall control announcing a station change to
-  the clients, replayed here as a command.
-- **AM display.** Any modulation other than FM is printed in kHz, untested; the
-  installation this was written against only has an FM tuner.
-- **Turning off with an area parameter of 0** (`*22*0#4#0*3#<a>#<p>##`), which
-  is outside the `[1-9]` range of the spec. It is what the wall command emitted,
-  so it is what the integration sends.
 - **Area commands.** `*22*<what>#<mm>#<a>*4#<area>##` is read as "turn this
   area on/off" and reflected on the amplifiers of that area. The spec lists the
   address, no command session uses it and it was never seen on the bus; the
   amplifiers report their own state a moment later either way.
+- **AM display.** Any modulation other than FM is printed in kHz, untested; the
+  installation this was written against only has an FM tuner.
+- **Seeking a frequency** (`frequency_seek_up` / `_down`) and **memorising a
+  preset** (`store_station`). The first is untried, the second overwrites a
+  preset of your installation.
 - **Setting a frequency** has no dedicated service. The existing
-  `myhome.send_message` service can write dimension 11 on a source:
+  `myhome.send_message` service can write dimension 11 on a source — this frame
+  carries no empty WHAT parameter, so the service accepts it:
 
 ```yaml
 action: myhome.send_message
@@ -203,10 +226,6 @@ The domain stays `myhome`, so your config entry and your `myhome.yaml` are kept
 as they are: there is nothing to reconfigure, and the other platforms behave
 exactly as before.
 
-HACS installs a repository's default branch or one of its releases. This fork's
-`master` carries the sound diffusion platform once the work is merged; until
-then, install manually.
-
 Through HACS, without removing anything first:
 
 1. HACS > 3-dot menu > *Custom repositories*, add `adrael/MyHOME` with the
@@ -217,7 +236,10 @@ Through HACS, without removing anything first:
    enough.
 4. Restart Home Assistant.
 
-Manually, which is what you want before the merge: back up
+HACS installs a repository's default branch, which for this fork is `master`
+and carries the sound diffusion platform.
+
+Manually, if you would rather not add a custom repository: back up
 `/config/custom_components/myhome/`, replace its contents with this repository's
 `custom_components/myhome/`, add the `media_player:` block to `myhome.yaml`, and
 restart.
@@ -225,6 +247,45 @@ restart.
 To roll back, reinstall the upstream integration **and comment out both the
 `media_player:` and the `radio_stations:` keys of `myhome.yaml`** before
 restarting: upstream knows neither and will refuse the file.
+
+### First run
+
+Turn the integration's logging up for the first test, in `configuration.yaml`:
+
+```yaml
+logger:
+  default: warning
+  logs:
+    custom_components.myhome: debug
+```
+
+Every WHO=22 frame the bus emits is then printed, which is the only way to see
+what your amplifiers actually answer. Put it back to `warning` once it works:
+the sound diffusion bus is chatty.
+
+What to check after the restart:
+
+- **Settings > Devices & services > MyHOME** lists one device per amplifier. If
+  it lists none, the `media_player:` block is under the wrong gateway key in
+  `myhome.yaml` — it belongs under the gateway whose `mac:` matches your
+  config entry. Remember `myhome.yaml` is read when the config entry is set up,
+  so every edit needs a restart.
+- **The amplifiers are `unavailable`.** That is the gateway session being down,
+  not a configuration problem: the entities come back on their own as soon as a
+  frame reaches the listener again, and their state is asked for anew.
+
+A short FAQ of what surprises people first:
+
+- **The state is `playing`, never `on`.** See the note above; write
+  `is_state('media_player.radio_cuisine', 'playing')`.
+- **The station shows no name**, only a frequency: that frequency is not in the
+  station table. Add it under the `radio_stations` option of the gateway.
+- **Changing station moves the whole house.** There is one tuner. That is the
+  installation, not the integration.
+- **Never send next/previous track to a group.** The station would jump once per
+  member.
+- **Sources 2 to 4 answer on the bus** and show up in a debug log. The
+  amplifiers listening to source 1 ignore them.
 
 ### Tests
 

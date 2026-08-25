@@ -1,8 +1,10 @@
 # A "Radios" view for the sound diffusion amplifiers.
 #
-# Requires Home Assistant 2024.10 or later: `perform-action` and the
-# services -> actions rename landed in 2024.8, the `sections` view and the
-# `heading` card in 2024.10.
+# Requires Home Assistant 2025.1 or later. What each version brought:
+# `perform-action` and the services -> actions rename 2024.8, the `sections`
+# view and the `heading` card 2024.10, the `media-player-volume-slider` tile
+# feature 2025.1 (the floor), its `show_mute_button` option 2026.6 — on an
+# older version that last key is simply ignored, the slider is unaffected.
 #
 # Paste the `- title: Radios` item below INTO the `views:` list your dashboard
 # already has ("Edit dashboard" > 3-dot menu > "Raw configuration editor").
@@ -15,8 +17,13 @@
 # top. The tuner attributes are published whether the amplifier is playing or
 # not, so those three rows stay readable with the whole house switched off.
 #
-# On/off: tapping a tile's icon toggles that amplifier (tile default). Rooms
-# with two amplifiers get an extra pair of buttons to drive both at once.
+# On/off is a pair of buttons per room, driving every amplifier of that room at
+# once. Tapping a tile's icon does NOT toggle a media player — the tile does
+# that for a light or a switch, not for this — so the buttons are the only way
+# in and every room has them.
+#
+# A blank "Station" row means the frequency the tuner reports is not in the
+# station table; see the `radio_stations` option of the gateway.
 #
 # Card widths follow the Home Assistant defaults for sections; on 2024.11+ you
 # can pin them with `grid_options: {columns: 6}` per card.
@@ -107,6 +114,24 @@ views:
             features:
               - type: media-player-volume-slider
                 show_mute_button: false
+          - type: button
+            name: Kitchen on
+            icon: mdi:power
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_on
+              target:
+                entity_id:
+                  - media_player.radio_cuisine
+          - type: button
+            name: Kitchen off
+            icon: mdi:power-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_cuisine
 
       - type: grid
         cards:
@@ -218,6 +243,24 @@ views:
             features:
               - type: media-player-volume-slider
                 show_mute_button: false
+          - type: button
+            name: Gym on
+            icon: mdi:power
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_on
+              target:
+                entity_id:
+                  - media_player.radio_gym
+          - type: button
+            name: Gym off
+            icon: mdi:power-off
+            tap_action:
+              action: perform-action
+              perform_action: media_player.turn_off
+              target:
+                entity_id:
+                  - media_player.radio_gym
 
       - type: grid
         cards:
