@@ -61,18 +61,20 @@ from .const import (
     CONF_LONG_PRESS,
     CONF_LONG_RELEASE,
     CONF_SOUND_SOURCES,
+    CONF_SOURCE,
+    CONF_WHERE,
     DOMAIN,
     LOGGER,
 )
 from .myhome_device import MyHOMEEntity
 from .sound_diffusion import (
     AMPLIFIER_EVENTS,
-    SourceCommand,
+    BROADCAST_EVENTS,
+    SOURCE_EVENTS,
     SourceFrequency,
     SourceFrequencyStation,
-    SourceRouted,
-    SourceState,
     SourceStation,
+    amplifier_device_id,
     parse_sound_diffusion,
 )
 from .button import (
@@ -163,21 +165,29 @@ class MyHOMEGatewayHandler:
                 else:
                     self.hass.bus.async_fire("myhome_message_event", {"gateway": str(self.gateway.host), "message": str(message)})
 
-            _raw_message = str(message)
-            if _raw_message.startswith("*22*") or _raw_message.startswith("*#22*"):
-                # OWNd 0.7.48 does not model WHO=22: sound diffusion events come
-                # back as raw strings, dimension requests as generic commands.
-                self.handle_sound_diffusion(_raw_message)
-                continue
+            # OWNd 0.7.48 models neither WHO=22 nor WHO=16: their events reach
+            # us as raw strings, and a WHO=22 dimension request as a generic
+            # `OWNCommand`. Both have to be handled before the warning below.
+            _raw_message = None
+            if isinstance(message, str):
+                _raw_message = message
+            elif isinstance(message, OWNMessage) and str(getattr(message, "who", "")) in ("16", "22"):
+                _raw_message = str(message)
 
-            if _raw_message.startswith("*16*") or _raw_message.startswith("*#16*"):
-                # Legacy duplicates the bus emits next to every WHO=22 frame.
-                LOGGER.debug(
-                    "%s Ignoring legacy WHO=16 message: `%s`",
-                    self.log_id,
-                    _raw_message,
-                )
-                continue
+            if _raw_message is not None:
+                if _raw_message.startswith("*22*") or _raw_message.startswith("*#22*"):
+                    self.handle_sound_diffusion(_raw_message)
+                    continue
+
+                if _raw_message.startswith("*16*") or _raw_message.startswith("*#16*"):
+                    # Legacy WHO=16 mirror frames emitted alongside WHO=22 by
+                    # sound diffusion devices; ignored.
+                    LOGGER.debug(
+                        "%s Ignoring legacy WHO=16 message: `%s`",
+                        self.log_id,
+                        _raw_message,
+                    )
+                    continue
 
             if not isinstance(message, OWNMessage):
                 LOGGER.warning(
@@ -393,6 +403,12 @@ class MyHOMEGatewayHandler:
 
     def handle_sound_diffusion(self, raw_message: str) -> None:
         """Dispatch a WHO=22 frame to the relevant media_player entities."""
+        if self.mac not in self.hass.data[DOMAIN]:
+            # The config entry has been unloaded while the listener was still
+            # draining its socket. Raising here would kill the loop before it
+            # gets a chance to close the session.
+            return
+
         _event = parse_sound_diffusion(raw_message)
         if _event is None:
             LOGGER.debug(
@@ -407,7 +423,7 @@ class MyHOMEGatewayHandler:
         _configured_amplifiers = self.hass.data[DOMAIN][self.mac][CONF_PLATFORMS][MEDIA_PLAYER]
 
         if isinstance(_event, AMPLIFIER_EVENTS):
-            _device_id = f"22-3#{_event.area}#{_event.point}"
+            _device_id = amplifier_device_id(_event.area, _event.point)
             if _device_id not in _configured_amplifiers:
                 LOGGER.debug(
                     "%s Sound diffusion event for unconfigured amplifier `%s`.",
@@ -416,11 +432,18 @@ class MyHOMEGatewayHandler:
                 )
                 return
             _devices = [_configured_amplifiers[_device_id]]
-        else:
-            # Every amplifier shares the same source, so the tuning information
-            # is stored once per gateway and all amplifiers are refreshed.
+        elif isinstance(_event, SOURCE_EVENTS):
+            # A source is shared by several amplifiers, so its tuning is stored
+            # once per gateway and read back by each of them.
             self.update_sound_source(_event)
-            _devices = list(_configured_amplifiers.values())
+            _devices = [_device for _device in _configured_amplifiers.values() if _device[CONF_SOURCE] == _event.source]
+        elif isinstance(_event, BROADCAST_EVENTS):
+            _area = getattr(_event, "area", None)
+            _devices = [
+                _device for _device in _configured_amplifiers.values() if _area is None or _device[CONF_WHERE].startswith(f"3#{_area}#")
+            ]
+        else:
+            return
 
         for _device in _devices:
             for _entity in _device[CONF_ENTITIES]:
@@ -428,7 +451,7 @@ class MyHOMEGatewayHandler:
                     _device[CONF_ENTITIES][_entity].handle_event(_event)
 
     def update_sound_source(self, event) -> None:
-        """Record the shared tuner's state, read back by every amplifier entity."""
+        """Record a source's tuning, read back by every amplifier listening to it."""
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
 
         if isinstance(event, SourceFrequencyStation):
@@ -440,15 +463,6 @@ class MyHOMEGatewayHandler:
             _source["frequency"] = event.frequency
         elif isinstance(event, SourceStation):
             _source["station"] = event.station
-        elif isinstance(event, SourceState):
-            _source["is_on"] = event.is_on
-            _source["mmtype"] = event.mmtype
-        elif isinstance(event, SourceRouted):
-            _source["is_on"] = True
-            _source["mmtype"] = event.mmtype
-            _source["area"] = event.area
-        elif isinstance(event, SourceCommand) and event.is_on is not None:
-            _source["is_on"] = event.is_on
 
     async def sending_loop(self, worker_id: int):
         self._terminate_sender = False
