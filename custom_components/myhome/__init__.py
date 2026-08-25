@@ -88,7 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             CONF_ENTITY
         ].test()
     except OSError as ose:
-        _gateway_handler = hass.data[DOMAIN].pop(CONF_GATEWAY)
+        _gateway_handler = hass.data[DOMAIN][entry.data[CONF_MAC]].pop(CONF_ENTITY)
         _host = _gateway_handler.gateway.host
         raise ConfigEntryNotReady(
             f"Gateway cannot be reached at {_host}, make sure its address is correct."
@@ -255,6 +255,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                             own_message,
                         )
                         await hass.data[DOMAIN][gateway][CONF_ENTITY].send(own_message)
+                    else:
+                        LOGGER.warning(
+                            "Invalid OWN message, not sent: `%s`", message
+                        )
                 else:
                     LOGGER.error(
                         "Could not parse message `%s`, not sending it.", message
@@ -276,8 +280,16 @@ async def async_unload_entry(hass, entry):
 
     LOGGER.info("Unloading MyHome entry.")
 
-    for platform in hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_PLATFORMS].keys():
-        await hass.config_entries.async_forward_entry_unload(entry, platform)
+    if not await hass.config_entries.async_unload_platforms(
+        entry, list(hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_PLATFORMS].keys())
+    ):
+        # The entry stays loaded, but leaving the listener running would keep a
+        # socket open against a gateway nobody talks to any more.
+        LOGGER.warning(
+            "A platform refused to unload, closing the gateway listener anyway."
+        )
+        await hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_ENTITY].close_listener()
+        return False
 
     hass.services.async_remove(DOMAIN, "sync_time")
     hass.services.async_remove(DOMAIN, "send_message")
