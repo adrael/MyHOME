@@ -88,7 +88,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             CONF_ENTITY
         ].test()
     except OSError as ose:
-        _gateway_handler = hass.data[DOMAIN].pop(CONF_GATEWAY)
+        _gateway_handler = hass.data[DOMAIN][entry.data[CONF_MAC]].pop(CONF_ENTITY)
         _host = _gateway_handler.gateway.host
         raise ConfigEntryNotReady(
             f"Gateway cannot be reached at {_host}, make sure its address is correct."
