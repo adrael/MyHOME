@@ -431,7 +431,7 @@ def test_turning_on_and_off_is_reflected_before_the_bus_answers(installation):
 
     asyncio.run(_entity.async_turn_off())
     assert _entity.state == OFF
-    assert installation.handler.sent[-1] == "*22*0#4#0*3#2#2##"
+    assert installation.handler.sent[-1] == "*22*0#4#2*3#2#2##"
 
 
 def test_setting_a_volume_is_reflected_before_the_bus_answers(installation):
@@ -502,11 +502,18 @@ def test_an_amplifier_that_never_was_commanded_takes_what_the_bus_says(installat
     assert _entity._raw_volume == 18
 
 
-def test_next_and_previous_track_use_the_bus_observed_form(installation):
+def test_next_and_previous_track_address_the_source(installation):
+    """Spec form, verified on hardware: the tuner is what moves, not the amplifier."""
     _entity = installation.entity(2, 2)
     asyncio.run(_entity.async_media_next_track())
     asyncio.run(_entity.async_media_previous_track())
-    assert installation.handler.sent == ["*22*9*5#3#2#2##", "*22*10*5#3#2#2##"]
+    assert installation.handler.sent == ["*22*9#*2#1##", "*22*10#*2#1##"]
+
+
+def test_next_track_follows_the_source_the_amplifier_listens_to():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=2)
+    asyncio.run(installation.entity(2, 2).async_media_next_track())
+    assert installation.handler.sent == ["*22*9#*2#2##"]
 
 
 def test_the_tuner_is_only_asked_for_once_per_gateway(installation):

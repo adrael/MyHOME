@@ -41,15 +41,15 @@ from .sound_diffusion import (
     AmplifierVolume,
     AreaCommand,
     SoundDiffusionEvent,
-    amplifier_off_bus,
+    amplifier_off,
     amplifier_on_simple,
     format_frequency,
     request_amplifier_state,
     request_amplifier_volume,
     request_source_frequency_station,
     station_name,
-    station_next_from_amplifier,
-    station_previous_from_amplifier,
+    station_next,
+    station_previous,
     volume_down,
     volume_set,
     volume_up,
@@ -283,10 +283,14 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         await self._command(amplifier_on_simple(self._area, self._point))
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
-        """Turn the amplifier off."""
+        """Turn the amplifier off, spec form, verified on hardware.
+
+        The wall control emits the same frame with an area parameter of 0; both
+        turn the amplifier off, see :func:`amplifier_off_bus`.
+        """
         self._attr_state = MediaPlayerState.OFF
         self.async_write_ha_state()
-        await self._command(amplifier_off_bus(self._area, self._point))
+        await self._command(amplifier_off(self._area, self._point))
 
     async def async_set_volume_level(self, volume: float):
         """Set the volume, converting the 0..1 HA scale to the bus' 0..31.
@@ -314,12 +318,17 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         await self._command(volume_down(self._area, self._point))
 
     async def async_media_next_track(self):
-        """Select the next station of the shared tuner."""
-        await self._command(station_next_from_amplifier(self._area, self._point))
+        """Select the next station of the shared tuner, spec form.
+
+        Addressed to the source rather than to this amplifier: the tuner is what
+        moves. Verified on hardware, although OWNd builds the frame with
+        `is_valid = False` — see :func:`station_next`.
+        """
+        await self._command(station_next(self._tuner_source))
 
     async def async_media_previous_track(self):
-        """Select the previous station of the shared tuner."""
-        await self._command(station_previous_from_amplifier(self._area, self._point))
+        """Select the previous station of the shared tuner. See above."""
+        await self._command(station_previous(self._tuner_source))
 
     # ----------------------------------------------------------------- events #
 
