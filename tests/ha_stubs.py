@@ -79,38 +79,74 @@ class MediaPlayerEntity(Entity):
 
 
 class _StringEnumMeta(type):
-    """Turns any attribute access into its lower-case name, as HA's enums do."""
+    """Turns the declared members into their lower-case name, as HA's enums do.
+
+    Only the declared ones: a typo in a member name has to raise here just as it
+    would against the real `StrEnum`, otherwise a test comparing against
+    `MediaPlayerState.PLAYNG` would quietly compare two invented strings.
+    """
+
+    def __new__(mcs, name, bases, namespace):
+        _class = super().__new__(mcs, name, bases, namespace)
+        for _member in namespace.get("_members", ()):
+            setattr(_class, _member, _member.lower())
+        return _class
 
     def __getattr__(cls, name):
-        if name.startswith("_"):
-            raise AttributeError(name)
-        value = name.lower()
-        setattr(cls, name, value)
-        return value
+        raise AttributeError(f"{cls.__name__} has no member named {name}")
 
 
 class SwitchDeviceClass(metaclass=_StringEnumMeta):
-    pass
+    _members = ("OUTLET", "SWITCH")
 
 
 class BinarySensorDeviceClass(metaclass=_StringEnumMeta):
-    pass
+    _members = (
+        "BATTERY",
+        "BATTERY_CHARGING",
+        "CO",
+        "COLD",
+        "CONNECTIVITY",
+        "DOOR",
+        "GARAGE_DOOR",
+        "GAS",
+        "HEAT",
+        "LIGHT",
+        "LOCK",
+        "MOISTURE",
+        "MOTION",
+        "MOVING",
+        "OCCUPANCY",
+        "OPENING",
+        "PLUG",
+        "POWER",
+        "PRESENCE",
+        "PROBLEM",
+        "RUNNING",
+        "SAFETY",
+        "SMOKE",
+        "SOUND",
+        "TAMPER",
+        "UPDATE",
+        "VIBRATION",
+        "WINDOW",
+    )
 
 
 class SensorDeviceClass(metaclass=_StringEnumMeta):
-    pass
+    _members = ("ENERGY", "HUMIDITY", "ILLUMINANCE", "POWER", "PRESSURE", "TEMPERATURE", "VOLTAGE")
 
 
 class MediaPlayerDeviceClass(metaclass=_StringEnumMeta):
-    pass
+    _members = ("RECEIVER", "SPEAKER", "TV")
 
 
 class MediaPlayerState(metaclass=_StringEnumMeta):
-    pass
+    _members = ("BUFFERING", "IDLE", "OFF", "ON", "PAUSED", "PLAYING", "STANDBY")
 
 
 class MediaType(metaclass=_StringEnumMeta):
-    pass
+    _members = ("APP", "CHANNEL", "EPISODE", "IMAGE", "MOVIE", "MUSIC", "PLAYLIST", "TVSHOW", "URL", "VIDEO")
 
 
 class MediaPlayerEntityFeature:
@@ -125,7 +161,7 @@ class MediaPlayerEntityFeature:
 
 
 class EntityCategory(metaclass=_StringEnumMeta):
-    pass
+    _members = ("CONFIG", "DIAGNOSTIC")
 
 
 def _module(name, **attributes):

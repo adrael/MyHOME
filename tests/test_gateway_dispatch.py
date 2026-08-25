@@ -10,6 +10,7 @@ import sys
 import types
 
 import pytest
+import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -17,6 +18,7 @@ import ha_stubs  # noqa: E402
 
 const = ha_stubs.load("const")
 sound_diffusion = ha_stubs.load("sound_diffusion")
+validate = ha_stubs.load("validate")
 gateway = ha_stubs.load("gateway")
 media_player = ha_stubs.load("media_player")
 
@@ -91,46 +93,45 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.status_requests.append(str(message))
 
 
+def configuration_file(amplifiers=None, source=1, radio_stations=None) -> str:
+    """The `myhome.yaml` such an installation would hold."""
+    _lines = ["villa:", f'  mac: "{MAC}"', "  media_player:"]
+    for _area, _point, _name in amplifiers if amplifiers is not None else AMPLIFIERS:
+        _source = source(_area, _point) if callable(source) else source
+        _lines.append(f'    ampli_{_area}_{_point}: {{ where: "3#{_area}#{_point}", name: "{_name}", source: {_source} }}')
+    if radio_stations is not None:
+        _lines.append("  radio_stations:" + (" {}" if not radio_stations else ""))
+        for _frequency, _name in radio_stations.items():
+            _lines.append(f'    "{_frequency}": "{_name}"')
+    return "\n".join(_lines) + "\n"
+
+
 class Installation:
-    """A stubbed `hass` holding one gateway and its amplifier entities."""
+    """A stubbed `hass` holding one gateway and its amplifier entities.
+
+    The data structure comes out of the real `validate.config_schema`, so the
+    tests cannot drift away from what the integration is actually handed.
+    """
 
     def __init__(self, amplifiers=AMPLIFIERS, source=1, radio_stations=None):
-        self.data = {DOMAIN: {MAC: {const.CONF_PLATFORMS: {}}}}
-        if radio_stations is not None:
-            self.data[DOMAIN][MAC][const.CONF_RADIO_STATIONS] = radio_stations
+        self.data = {DOMAIN: validate.config_schema(yaml.safe_load(configuration_file(amplifiers, source, radio_stations)))}
 
         self.handler = FakeGateway(self)
-        self.devices = {}
+        self.devices = self.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"]
         self.entities = {}
-
-        for _area, _point, _name in amplifiers:
-            _device_id = sound_diffusion.amplifier_device_id(_area, _point)
-            _source = source(_area, _point) if callable(source) else source
-            self.devices[_device_id] = {
-                const.CONF_WHO: "22",
-                const.CONF_WHERE: f"3#{_area}#{_point}",
-                "name": _name,
-                const.CONF_ENTITY_NAME: None,
-                const.CONF_ICON: None,
-                const.CONF_SOURCE: _source,
-                const.CONF_MANUFACTURER: "BTicino S.p.A.",
-                const.CONF_DEVICE_MODEL: None,
-                const.CONF_ENTITIES: {},
-            }
-        self.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"] = self.devices
 
         for _device_id, _device in self.devices.items():
             _entity = media_player.MyHOMEAmplifier(
                 hass=self,
                 name=_device["name"],
-                entity_name=None,
-                icon=None,
+                entity_name=_device[const.CONF_ENTITY_NAME],
+                icon=_device[const.CONF_ICON],
                 device_id=_device_id,
-                who="22",
+                who=_device[const.CONF_WHO],
                 where=_device[const.CONF_WHERE],
                 source=_device[const.CONF_SOURCE],
                 manufacturer=_device[const.CONF_MANUFACTURER],
-                model=None,
+                model=_device[const.CONF_DEVICE_MODEL],
                 gateway=self.handler,
             )
             # What `async_added_to_hass` does: register the entity and let it
@@ -406,7 +407,7 @@ def test_a_modulation_other_than_fm_is_reported_in_khz():
 
 
 def test_the_gateway_station_table_overrides_the_built_in_one():
-    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={10600: "MA RADIO"})
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={"106.0": "MA RADIO"})
     installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
     assert installation.entity(2, 2).media_channel == "MA RADIO"
 
@@ -521,7 +522,7 @@ def test_next_and_previous_track_use_the_bus_observed_form(installation):
 
 
 def test_the_tuner_is_only_asked_for_once_per_gateway(installation):
-    """Eleven amplifiers, one tuner: 11 x 2 amplifier requests plus one tuner one."""
+    """Every amplifier asks about itself; only one of them asks about the tuner."""
 
     async def _update_every_amplifier():
         for _entity in installation.entities.values():
@@ -530,10 +531,10 @@ def test_the_tuner_is_only_asked_for_once_per_gateway(installation):
     asyncio.run(_update_every_amplifier())
 
     _requests = installation.handler.status_requests
-    assert len(_requests) == 23
     assert _requests.count("*#22*5#2#1*11##") == 1
-    assert _requests.count("*#22*3#2#2*12##") == 1
-    assert _requests.count("*#22*3#2#2*1##") == 1
+    for _area, _point, _ in AMPLIFIERS:
+        assert _requests.count(f"*#22*3#{_area}#{_point}*12##") == 1
+        assert _requests.count(f"*#22*3#{_area}#{_point}*1##") == 1
 
 
 def test_the_tuner_is_claimed_before_the_first_request_goes_out(installation):
@@ -559,7 +560,10 @@ def test_each_source_is_asked_for_once():
     _requests = installation.handler.status_requests
     assert _requests.count("*#22*5#2#1*11##") == 1
     assert _requests.count("*#22*5#2#2*11##") == 1
-    assert len(_requests) == 24
+    assert sorted(_request for _request in _requests if _request.startswith("*#22*5#")) == [
+        "*#22*5#2#1*11##",
+        "*#22*5#2#2*11##",
+    ]
 
 
 # --------------------------------------------------------------------------- #
