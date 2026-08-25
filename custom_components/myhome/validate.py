@@ -11,6 +11,7 @@ from voluptuous import (
     All,
     In,
     Invalid,
+    Range,
 )
 from homeassistant.helpers.device_registry import format_mac as ha_format_mac
 from homeassistant.components.light import DOMAIN as LIGHT
@@ -29,6 +30,7 @@ from homeassistant.components.sensor import (
     DOMAIN as SENSOR,
 )
 from homeassistant.components.climate import DOMAIN as CLIMATE
+from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.const import CONF_NAME, CONF_MAC
 
 from .const import (
@@ -41,6 +43,7 @@ from .const import (
     CONF_ICON,
     CONF_ICON_ON,
     CONF_ZONE,
+    CONF_SOURCE,
     CONF_FAN_SUPPORT,
     CONF_MANUFACTURER,
     CONF_DEVICE_MODEL,
@@ -151,6 +154,37 @@ class SpecialWhere(object):
             return v
         else:
             raise Invalid(f"Invalid WHERE {v}, it must be a string of digits.")
+
+    def __repr__(self):
+        return "Where(%s, msg=%r)" % ("String", self.msg)
+
+
+class Amplifier(object):
+    """Sound diffusion amplifier WHERE: `3#<area>#<point>`, or the short `<area>#<point>`."""
+
+    def __init__(self, msg=None):
+        self.msg = msg
+
+    def __call__(self, v):
+        if type(v) == str:
+            _parts = v.split("#")
+            if len(_parts) == 3 and _parts[0] == "3":
+                _area, _point = _parts[1], _parts[2]
+            elif len(_parts) == 2:
+                _area, _point = _parts[0], _parts[1]
+            else:
+                _area, _point = None, None
+            if (
+                _area is not None
+                and _area.isdigit()
+                and _point.isdigit()
+                and int(_area) >= 0
+                and int(_area) <= 9
+                and int(_point) >= 0
+                and int(_point) <= 9
+            ):
+                return f"3#{int(_area)}#{int(_point)}"
+        raise Invalid(f"Invalid Sound Diffusion WHERE {v}, it must be a string like '3#<area>#<point>' with area and point in [0-9].")
 
     def __repr__(self):
         return "Where(%s, msg=%r)" % ("String", self.msg)
@@ -421,6 +455,21 @@ climate_schema = MyHomeDeviceSchema(
     }
 )
 
+media_player_schema = MyHomeDeviceSchema(
+    {
+        Required(str): {
+            Optional(CONF_WHO, default="22"): "22",
+            Required(CONF_WHERE): All(Coerce(str), Amplifier(), msg="Invalid <WHERE>, expecting a valid Sound Diffusion amplifier <WHERE>"),
+            Required(CONF_NAME): str,
+            Optional(CONF_ENTITY_NAME): str,
+            Optional(CONF_SOURCE, default=1): All(Coerce(int), Range(min=1, max=9)),
+            Optional(CONF_ICON, default="mdi:speaker"): str,
+            Optional(CONF_MANUFACTURER, default="BTicino S.p.A."): str,
+            Optional(CONF_DEVICE_MODEL): Coerce(str),
+        }
+    }
+)
+
 gateway_schema = Schema(
     {
         Required(CONF_MAC): MacAddress(),
@@ -430,6 +479,7 @@ gateway_schema = Schema(
         Optional(BINARY_SENSOR): binary_sensor_schema,
         Optional(SENSOR): sensor_schema,
         Optional(CLIMATE): climate_schema,
+        Optional(MEDIA_PLAYER): media_player_schema,
     }
 )
 
