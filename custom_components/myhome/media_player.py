@@ -1,4 +1,6 @@
 """Support for MyHome sound diffusion amplifiers (WHO=22)."""
+import time
+
 from homeassistant.components.media_player import (
     DOMAIN as PLATFORM,
     MediaPlayerDeviceClass,
@@ -54,6 +56,11 @@ from .sound_diffusion import (
     volume_set,
     volume_up,
 )
+
+#: How long an optimistic state is shielded from the bus answering with the
+#: value the amplifier still held while the command was travelling. The observed
+#: echoes followed their command within about a hundred milliseconds.
+COMMAND_ECHO_GRACE = 2.0
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -143,6 +150,7 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         self._attr_state = None
         self._attr_volume_level = None
         self._raw_volume = None
+        self._last_command_at = None
 
     # ----------------------------------------------------------------- state #
 
@@ -230,6 +238,26 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         self._raw_volume = min(MAX_VOLUME, max(0, int(volume)))
         self._attr_volume_level = self._raw_volume / MAX_VOLUME
 
+    async def _command(self, frame: str) -> None:
+        """Send a frame, remembering when, so its echo can be told from an answer."""
+        self._last_command_at = time.monotonic()
+        await self._gateway_handler.send(OWNCommand(frame))
+
+    def _contradicts_a_fresh_command(self, message) -> bool:
+        """Whether an event disagrees with a command sent moments ago.
+
+        An amplifier keeps reporting the value it still holds while a command is
+        on its way, which would make the entity flip back and forth. Past the
+        grace period the bus is right and we are not.
+        """
+        if self._last_command_at is None or time.monotonic() - self._last_command_at >= COMMAND_ECHO_GRACE:
+            return False
+        if isinstance(message, AmplifierVolume):
+            return self._raw_volume is not None and message.volume != self._raw_volume
+        if isinstance(message, AmplifierState):
+            return self._attr_state is not None and message.is_on != self._is_on
+        return False
+
     # -------------------------------------------------------------- commands #
 
     async def async_update(self):
@@ -251,45 +279,46 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         """Turn the amplifier on."""
         self._attr_state = MediaPlayerState.PLAYING
         self.async_write_ha_state()
-        await self._gateway_handler.send(OWNCommand(amplifier_on_simple(self._area, self._point)))
+        await self._command(amplifier_on_simple(self._area, self._point))
 
     async def async_turn_off(self, **kwargs):  # pylint: disable=unused-argument
         """Turn the amplifier off."""
         self._attr_state = MediaPlayerState.OFF
         self.async_write_ha_state()
-        await self._gateway_handler.send(OWNCommand(amplifier_off_bus(self._area, self._point)))
+        await self._command(amplifier_off_bus(self._area, self._point))
 
     async def async_set_volume_level(self, volume: float):
         """Set the volume, converting the 0..1 HA scale to the bus' 0..31.
 
-        The state is set optimistically: writing dimension 1 is not echoed back
-        as an event, so nothing else would ever confirm the new volume.
+        The state is set optimistically: the bus does echo the new volume back
+        as `*#22*3#<a>#<p>*1*<volume>##` (§3.4.2.1), the optimistic write only
+        hides the round trip.
         """
         self._set_raw_volume(round(volume * MAX_VOLUME))
         self.async_write_ha_state()
-        await self._gateway_handler.send(OWNCommand(volume_set(self._area, self._point, self._raw_volume)))
+        await self._command(volume_set(self._area, self._point, self._raw_volume))
 
     async def async_volume_up(self):
         """Raise the volume by one step."""
         if self._raw_volume is not None:
             self._set_raw_volume(self._raw_volume + 1)
             self.async_write_ha_state()
-        await self._gateway_handler.send(OWNCommand(volume_up(self._area, self._point)))
+        await self._command(volume_up(self._area, self._point))
 
     async def async_volume_down(self):
         """Lower the volume by one step."""
         if self._raw_volume is not None:
             self._set_raw_volume(self._raw_volume - 1)
             self.async_write_ha_state()
-        await self._gateway_handler.send(OWNCommand(volume_down(self._area, self._point)))
+        await self._command(volume_down(self._area, self._point))
 
     async def async_media_next_track(self):
         """Select the next station of the shared tuner."""
-        await self._gateway_handler.send(OWNCommand(station_next_from_amplifier(self._area, self._point)))
+        await self._command(station_next_from_amplifier(self._area, self._point))
 
     async def async_media_previous_track(self):
         """Select the previous station of the shared tuner."""
-        await self._gateway_handler.send(OWNCommand(station_previous_from_amplifier(self._area, self._point)))
+        await self._command(station_previous_from_amplifier(self._area, self._point))
 
     # ----------------------------------------------------------------- events #
 
@@ -300,6 +329,14 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         already been updated by the gateway, so they only trigger a refresh.
         """
         LOGGER.debug("%s Sound diffusion event: %s", self._gateway_handler.log_id, message)
+
+        if self._contradicts_a_fresh_command(message):
+            LOGGER.debug(
+                "%s Ignoring `%s`, it contradicts a command sent moments ago.",
+                self._gateway_handler.log_id,
+                message,
+            )
+            return
 
         if isinstance(message, AmplifierState):
             self._attr_state = MediaPlayerState.PLAYING if message.is_on else MediaPlayerState.OFF

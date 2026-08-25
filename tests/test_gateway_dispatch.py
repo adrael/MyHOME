@@ -411,6 +411,53 @@ def test_stepping_an_unknown_volume_only_sends(installation):
     assert installation.handler.sent == ["*22*3#1*3#2#2##"]
 
 
+def test_a_stale_volume_echo_does_not_undo_a_fresh_command(installation):
+    """The amplifier answers the volume it still holds while the command travels."""
+    _entity = installation.entity(2, 2)
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
+
+    asyncio.run(_entity.async_volume_up())
+    assert _entity._raw_volume == 19
+
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
+    assert _entity._raw_volume == 19
+
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*19##")
+    assert _entity._raw_volume == 19
+
+
+def test_a_stale_state_echo_does_not_undo_a_fresh_command(installation):
+    _entity = installation.entity(2, 2)
+    installation.replay(["*#22*3#2#2*12*1*4##"])
+
+    asyncio.run(_entity.async_turn_off())
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*12*1*4##")
+
+    assert _entity.state == OFF
+
+
+def test_the_bus_wins_once_the_command_is_old_enough(installation):
+    """The window only hides the latency; a real disagreement has to come through."""
+    _entity = installation.entity(2, 2)
+    asyncio.run(_entity.async_turn_on())
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
+
+    _entity._last_command_at -= media_player.COMMAND_ECHO_GRACE
+
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*12*0*10##")
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*7##")
+    assert _entity.state == OFF
+    assert _entity._raw_volume == 7
+
+
+def test_an_amplifier_that_never_was_commanded_takes_what_the_bus_says(installation):
+    _entity = installation.entity(2, 2)
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*12*1*4##")
+    installation.handler.handle_sound_diffusion("*#22*3#2#2*1*18##")
+    assert _entity.state == PLAYING
+    assert _entity._raw_volume == 18
+
+
 def test_next_and_previous_track_use_the_bus_observed_form(installation):
     _entity = installation.entity(2, 2)
     asyncio.run(_entity.async_media_next_track())
