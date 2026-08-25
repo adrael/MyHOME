@@ -28,7 +28,7 @@ from .validate import config_schema, format_mac
 from .gateway import MyHOMEGatewayHandler
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-PLATFORMS = ["light", "switch", "cover", "climate", "binary_sensor", "sensor", "media_player"]
+PLATFORMS = ["light", "switch", "cover", "climate", "binary_sensor", "sensor"]
 
 
 async def async_setup(hass, config):
@@ -255,6 +255,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
                             own_message,
                         )
                         await hass.data[DOMAIN][gateway][CONF_ENTITY].send(own_message)
+                    else:
+                        LOGGER.warning(
+                            "Invalid OWN message, not sent: `%s`", message
+                        )
                 else:
                     LOGGER.error(
                         "Could not parse message `%s`, not sending it.", message
@@ -276,8 +280,10 @@ async def async_unload_entry(hass, entry):
 
     LOGGER.info("Unloading MyHome entry.")
 
-    for platform in hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_PLATFORMS].keys():
-        await hass.config_entries.async_forward_entry_unload(entry, platform)
+    if not await hass.config_entries.async_unload_platforms(
+        entry, list(hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_PLATFORMS].keys())
+    ):
+        return False
 
     hass.services.async_remove(DOMAIN, "sync_time")
     hass.services.async_remove(DOMAIN, "send_message")
