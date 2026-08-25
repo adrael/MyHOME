@@ -158,6 +158,14 @@ class MyHOMEGatewayHandler:
             message = await _event_session.get_next()
             LOGGER.debug("%s Message received: `%s`", self.log_id, message)
 
+            if self.generate_events:
+                if isinstance(message, OWNMessage):
+                    _event_content = {"gateway": str(self.gateway.host)}
+                    _event_content.update(message.event_content)
+                    self.hass.bus.async_fire("myhome_message_event", _event_content)
+                else:
+                    self.hass.bus.async_fire("myhome_message_event", {"gateway": str(self.gateway.host), "message": str(message)})
+
             if message is None:
                 # `OWNEventSession.get_next` answers `None` for every failure it
                 # meets, having reconnected itself on an interrupted read. The
@@ -168,14 +176,6 @@ class MyHOMEGatewayHandler:
             if not self.is_connected:
                 # A frame came through: the session is alive again.
                 await self.reconnected()
-
-            if self.generate_events:
-                if isinstance(message, OWNMessage):
-                    _event_content = {"gateway": str(self.gateway.host)}
-                    _event_content.update(message.event_content)
-                    self.hass.bus.async_fire("myhome_message_event", _event_content)
-                else:
-                    self.hass.bus.async_fire("myhome_message_event", {"gateway": str(self.gateway.host), "message": str(message)})
 
             # OWNd 0.7.48 models neither WHO=22 nor WHO=16: their events reach
             # us as raw strings, and a WHO=22 dimension request as a generic
