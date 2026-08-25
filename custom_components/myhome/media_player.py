@@ -143,6 +143,11 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         self._area = int(_parts[1])
         self._point = int(_parts[2])
         self._source = source
+        #: Source a WHAT 35 command put this amplifier on, overriding the
+        #: configured one. The gateway still filters source events on the
+        #: configured source, so a runtime switch shows up here but does not
+        #: schedule a refresh of its own.
+        self._current_source = None
 
         # Make sure the shared tuner store exists before any event is dispatched.
         hass.data[DOMAIN][gateway.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(self._source, {})
@@ -164,20 +169,27 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         return self._attr_state == MediaPlayerState.PLAYING
 
     @property
+    def _tuner_source(self) -> int:
+        """Source this amplifier listens to, as last seen rather than as configured."""
+        return self._current_source or self._source
+
+    @property
     def _tuner(self) -> dict:
         """Tuning information of the source this amplifier listens to."""
-        return self._hass.data[DOMAIN][self._gateway_handler.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(self._source, {})
+        return self._hass.data[DOMAIN][self._gateway_handler.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(self._tuner_source, {})
 
     @property
     def _radio_stations(self):
-        """Station table configured on the gateway, `None` for the built-in one."""
-        return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_RADIO_STATIONS)
+        """Station table configured on the gateway, `None` for the built-in one.
+
+        An empty table is no table: `radio_stations:` left blank in the
+        configuration file must not blank out every station name.
+        """
+        return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_RADIO_STATIONS) or None
 
     @property
     def _frequency(self):
-        """Tuned frequency, or `None` while the amplifier plays nothing."""
-        if not self._is_on:
-            return None
+        """Frequency the shared tuner is on, whatever this amplifier is doing."""
         return self._tuner.get("frequency")
 
     @property
@@ -190,13 +202,17 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
 
     @property
     def media_content_type(self):
-        return MediaType.CHANNEL if self._frequency is not None else None
+        return MediaType.CHANNEL if self._is_on and self._frequency is not None else None
 
     @property
     def media_title(self):
-        """`106.0 MHz · SUD RADIO`, or just the frequency when it is unknown."""
+        """`106.0 MHz · SUD RADIO`, or just the frequency when it is unknown.
+
+        What is *playing* here, so `None` while the amplifier is off, however
+        well tuned the source may be.
+        """
         _frequency = self._frequency
-        if _frequency is None:
+        if not self._is_on or _frequency is None:
             return None
         _formatted = format_frequency(_frequency, self._modulation)
         _station = self._station_name
@@ -204,29 +220,35 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
 
     @property
     def media_channel(self):
-        return self._station_name
+        return self._station_name if self._is_on else None
 
     @property
     def extra_state_attributes(self):
-        """Only the attributes that carry a value, to keep the state readable."""
+        """Only the attributes that carry a value, to keep the state readable.
+
+        The tuner is one box shared by the whole installation, so what it is
+        tuned to is reported whether this amplifier is playing it or not. That
+        is what makes a dashboard able to show the station while every amplifier
+        is off.
+        """
         _attributes = {
             "area": self._area,
             "point": self._point,
-            "source_id": self._source,
+            "source_id": self._tuner_source,
         }
 
-        if self._is_on:
-            _frequency = self._tuner.get("frequency")
-            if _frequency is not None:
-                _attributes["frequency_mhz"] = round(_frequency / 100, 2)
-                if self._modulation != MODULATION_FM:
-                    _attributes["modulation"] = self._modulation
-                _station = self._station_name
-                if _station is not None:
-                    _attributes["station_name"] = _station
-            _preset = self._tuner.get("station")
-            if _preset is not None:
-                _attributes["preset"] = _preset
+        _frequency = self._frequency
+        if _frequency is not None:
+            _attributes["frequency_mhz"] = round(_frequency / 100, 2)
+            if self._modulation != MODULATION_FM:
+                _attributes["modulation"] = self._modulation
+            _station = self._station_name
+            if _station is not None:
+                _attributes["station_name"] = _station
+
+        _preset = self._tuner.get("station")
+        if _preset is not None:
+            _attributes["preset"] = _preset
 
         if self._raw_volume is not None:
             _attributes["raw_volume"] = self._raw_volume
@@ -265,15 +287,18 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
 
         Only used by the generic entity update service and at startup.
         """
+        # Claimed before the first `await`, so the amplifiers being added to hass
+        # together cannot interleave and all ask for the same tuning.
+        _tuner = self._tuner
+        _ask_the_tuner = not _tuner.get(CONF_TUNER_REQUESTED)
+        if _ask_the_tuner:
+            _tuner[CONF_TUNER_REQUESTED] = True
+
         await self._gateway_handler.send_status_request(OWNCommand(request_amplifier_state(self._area, self._point)))
         await self._gateway_handler.send_status_request(OWNCommand(request_amplifier_volume(self._area, self._point)))
 
-        _tuner = self._tuner
-        if not _tuner.get(CONF_TUNER_REQUESTED):
-            # Flagged before the first `await` so the eleven amplifiers being
-            # added to hass cannot interleave and all ask for the same tuning.
-            _tuner[CONF_TUNER_REQUESTED] = True
-            await self._gateway_handler.send_status_request(OWNCommand(request_source_frequency_station(self._source)))
+        if _ask_the_tuner:
+            await self._gateway_handler.send_status_request(OWNCommand(request_source_frequency_station(self._tuner_source)))
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn the amplifier on."""
@@ -343,6 +368,9 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         elif isinstance(message, AmplifierVolume):
             self._set_raw_volume(message.volume)
         elif isinstance(message, (AmplifierCommand, AreaCommand)):
+            if isinstance(message, AmplifierCommand) and message.source is not None:
+                # WHAT 35 turns an amplifier on *and* puts it on a source.
+                self._current_source = message.source
             if message.is_on is not None:
                 self._attr_state = MediaPlayerState.PLAYING if message.is_on else MediaPlayerState.OFF
 

@@ -499,8 +499,11 @@ class MyHOMEGatewayHandler:
             _devices = [_configured_amplifiers[_device_id]]
         elif isinstance(_event, SOURCE_EVENTS):
             # A source is shared by several amplifiers, so its tuning is stored
-            # once per gateway and read back by each of them.
-            self.update_sound_source(_event)
+            # once per gateway and read back by each of them. Repeated readings,
+            # and the events carrying no tuning at all, change nothing worth
+            # writing a dozen entity states for.
+            if not self.update_sound_source(_event):
+                return
             _devices = [_device for _device in _configured_amplifiers.values() if _device[CONF_SOURCE] == _event.source]
         elif isinstance(_event, BROADCAST_EVENTS):
             # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
@@ -513,9 +516,14 @@ class MyHOMEGatewayHandler:
                 if isinstance(_device[CONF_ENTITIES][_entity], MyHOMEEntity):
                     _device[CONF_ENTITIES][_entity].handle_event(_event)
 
-    def update_sound_source(self, event) -> None:
-        """Record a source's tuning, read back by every amplifier listening to it."""
+    def update_sound_source(self, event) -> bool:
+        """Record a source's tuning; answer whether it moved.
+
+        Read back by every amplifier listening to that source, which is why an
+        unchanged reading is worth nothing to them.
+        """
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
+        _before = dict(_source)
 
         if isinstance(event, SourceFrequencyStation):
             _source["modulation"] = event.modulation
@@ -526,6 +534,8 @@ class MyHOMEGatewayHandler:
             _source["frequency"] = event.frequency
         elif isinstance(event, SourceStation):
             _source["station"] = event.station
+
+        return _source != _before
 
     async def sending_loop(self, worker_id: int):
         self._terminate_sender = False

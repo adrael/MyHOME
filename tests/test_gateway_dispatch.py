@@ -82,9 +82,12 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.status_requests = []
 
     async def send(self, message):
+        await asyncio.sleep(0)
         self.sent.append(str(message))
 
     async def send_status_request(self, message):
+        # Yielding here is what makes the interleaving of `async_update` visible.
+        await asyncio.sleep(0)
         self.status_requests.append(str(message))
 
 
@@ -342,6 +345,58 @@ def test_attributes_are_reduced_to_what_carries_a_value(installation):
     }
 
 
+def test_the_tuner_attributes_show_even_when_the_amplifier_is_off(installation):
+    """The tuner is one box for the whole house: what it plays is worth showing."""
+    installation.replay(CAPTURE)
+    _entity = installation.entity(2, 1)
+
+    assert _entity.state == OFF
+    assert _entity.extra_state_attributes == {
+        "area": 2,
+        "point": 1,
+        "source_id": 1,
+        "frequency_mhz": 106.0,
+        "station_name": "SUD RADIO",
+        "preset": 14,
+        "raw_volume": 17,
+    }
+    # What the amplifier plays, on the other hand, is nothing.
+    assert _entity.media_title is None
+    assert _entity.media_channel is None
+    assert _entity.media_content_type is None
+
+
+def test_an_amplifier_follows_the_source_a_what_35_command_selected(installation):
+    _entity = installation.entity(2, 2)
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
+    assert _entity.media_title == "106.0 MHz · SUD RADIO"
+
+    installation.handler.handle_sound_diffusion("*22*35#4#2#2*3#2#2##")
+    installation.handler.handle_sound_diffusion("*#22*5#2#2*11*1*9730*15##")
+
+    assert _entity.media_title == "97.3 MHz · NOSTALGIE"
+    assert _entity.extra_state_attributes["source_id"] == 2
+
+
+def test_an_unchanged_tuner_does_not_refresh_the_amplifiers(installation):
+    installation.handler.handle_sound_diffusion("*#22*5#2#1*11*1*10600*14##")
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.handler.handle_sound_diffusion("*#22*5#2#1*11*1*10600*14##")
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+    installation.handler.handle_sound_diffusion("*#22*5#2#1*11*1*9730*15##")
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+
+
+def test_an_empty_station_table_falls_back_to_the_built_in_one():
+    """`radio_stations:` with nothing under it must not blank every station."""
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={})
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
+    assert installation.entity(2, 2).media_channel == "SUD RADIO"
+
+
 def test_a_modulation_other_than_fm_is_reported_in_khz():
     installation = Installation(amplifiers=[(2, 2, "Radio")])
     installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*3*1080*4##"])
@@ -479,6 +534,17 @@ def test_the_tuner_is_only_asked_for_once_per_gateway(installation):
     assert _requests.count("*#22*5#2#1*11##") == 1
     assert _requests.count("*#22*3#2#2*12##") == 1
     assert _requests.count("*#22*3#2#2*1##") == 1
+
+
+def test_the_tuner_is_claimed_before_the_first_request_goes_out(installation):
+    """Eleven amplifiers are added at once; only one of them may ask for the tuning."""
+
+    async def _update_concurrently():
+        await asyncio.gather(*(_entity.async_update() for _entity in installation.entities.values()))
+
+    asyncio.run(_update_concurrently())
+
+    assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
 
 
 def test_each_source_is_asked_for_once():
