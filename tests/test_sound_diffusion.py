@@ -241,6 +241,10 @@ def test_the_dispatched_source_events_are_the_ones_that_feed_the_store():
         # station arrive right after as dim 5/11/6 frames, so nothing to report.
         "*22*9*5#3#2#2##",
         "*22*10*5#3#2#2##",
+        # Same thing addressed to the source, which is what the integration
+        # sends: the empty WHAT parameter is no parameter at all.
+        "*22*9#*2#1##",
+        "*22*10#*2#1##",
         # Echoes of our own dimension *writes*: `*#<dim>` is a write, not a value.
         "*#22*3#2#2*#1*18##",
         "*#22*5#2#1*#11*1*10600*14##",
