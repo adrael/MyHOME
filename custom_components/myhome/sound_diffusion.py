@@ -444,7 +444,12 @@ def amplifier_off(area: int, point: int) -> str:
 
 
 def amplifier_off_bus(area: int, point: int) -> str:
-    """Turn an amplifier off, in the exact form captured on the bus (area 0)."""
+    """Turn an amplifier off, in the exact form captured on the bus (area 0).
+
+    The area parameter is 0, outside the ``[1-9]`` range the spec gives it. This
+    was captured as the echo of a wall command, so the amplifiers do act on it;
+    :func:`amplifier_off` is the spec form, kept as a fallback.
+    """
     return f"*22*0#{MMTYPE_STEREO}#0*3#{area}#{point}##"
 
 
@@ -465,44 +470,47 @@ def volume_set(area: int, point: int, volume: int) -> str:
 def station_next(source: int = 1) -> str:
     """Next station, spec form (§3.1.5).
 
-    Not yet confirmed on hardware; the bus-observed form ``*22*9*5#3#a#p##``
-    (:func:`station_next_from_amplifier`) is used by default.
+    Trails an empty WHAT parameter, which ``OWNCommand`` accepts but flags
+    ``is_valid = False``; since nothing reads that flag on the way out, the
+    frame does reach the bus. Whether the gateway acts on it is unknown — the
+    bus-observed :func:`station_next_from_amplifier` is what this integration
+    sends.
     """
     return f"*22*9#*2#{source}##"
 
 
 def station_previous(source: int = 1) -> str:
-    """Previous station, spec form (§3.1.5).
-
-    Not yet confirmed on hardware; the bus-observed form ``*22*10*5#3#a#p##``
-    (:func:`station_previous_from_amplifier`) is used by default.
-    """
+    """Previous station, spec form (§3.1.5). See :func:`station_next`."""
     return f"*22*10#*2#{source}##"
 
 
 def station_next_from_amplifier(area: int, point: int) -> str:
-    """Next station, addressed as general with the amplifier as emitter.
+    """Next station, addressed as general with the amplifier as the emitter.
 
-    This is the form the wall command emitted on the bus, so it is the one this
-    integration sends.
+    ``*22*9*5#3#<a>#<p>##`` was captured as an *event*, emitted by the wall
+    control towards the clients; it is replayed here as a command, which is not
+    the same direction. It is preferred over the spec form only because it is
+    the one that was seen making the tuner move. Both want checking on hardware.
     """
     return f"*22*9*5#3#{area}#{point}##"
 
 
 def station_previous_from_amplifier(area: int, point: int) -> str:
+    """Previous station. See :func:`station_next_from_amplifier`."""
     return f"*22*10*5#3#{area}#{point}##"
 
 
 def frequency_seek_up(source: int = 1, step: Optional[int] = None) -> str:
     """Seek up, automatically (``step`` omitted) or by a given frequency step.
 
-    Spec form (§3.1.5), not yet confirmed on hardware.
+    Spec form (§3.1.5), not confirmed on hardware. Without a step the WHAT
+    parameter is empty, as in :func:`station_next`.
     """
     return f"*22*5#{step if step is not None else ''}*2#{source}##"
 
 
 def frequency_seek_down(source: int = 1, step: Optional[int] = None) -> str:
-    """Seek down. Spec form (§3.1.5), not yet confirmed on hardware."""
+    """Seek down. Spec form (§3.1.5), see :func:`frequency_seek_up`."""
     return f"*22*6#{step if step is not None else ''}*2#{source}##"
 
 
