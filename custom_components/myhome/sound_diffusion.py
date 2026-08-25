@@ -7,6 +7,11 @@ generic ``OWNCommand``. Everything WHO=22 specific therefore lives here.
 This module is deliberately free of any Home Assistant or OWNd import so it can
 be imported and tested on its own.
 
+Every frame builder says whether it was verified on hardware. "Verified" means
+one session against the installation this fork was written for (gateway F454,
+amplifier ``3#2#2``, FM tuner ``2#1``, 2026-08-25): the frame was sent and the
+bus answered what it should, within 300 ms.
+
 Addressing (Legrand WHO_22 v1.1):
     source              ``2#<source>``
     amplifier           ``3#<area>#<point>``
@@ -202,9 +207,10 @@ class AreaCommand:
     """``*22*<what>#<mmtype>#<area param>*4#<area>##`` — on/off for a whole area.
 
     The spec table (§2.3) lists ``4#<area>`` as a WHERE; no command session of
-    chapter 3 uses it and it was never observed on the bus. It is kept because
-    the blast radius is one area and the dimension 12 events of each amplifier
-    follow within a moment, correcting whatever we got wrong.
+    chapter 3 uses it, it was never observed on the bus and it is **not verified
+    on hardware**. It is kept because the blast radius is one area and the
+    dimension 12 events of each amplifier follow within a moment, correcting
+    whatever we got wrong.
 
     Only the on/off WHATs are modelled: a volume or station command addressed to
     an area tells us nothing we can reflect without knowing each amplifier. The
@@ -434,17 +440,30 @@ def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
 
 
 def amplifier_on_simple(area: int, point: int) -> str:
-    """Turn an amplifier on, in the exact form captured on the bus."""
+    """Turn an amplifier on (WHAT 1), the form captured on the bus.
+
+    Verified on hardware (F454, 2026-08-25): answered with dimension 12 and the
+    volume within about 150 ms. This is what the integration sends.
+    """
     return f"*22*1#{MMTYPE_STEREO}#{area}*3#{area}#{point}##"
 
 
 def amplifier_on(area: int, point: int, source: int = 1) -> str:
-    """Turn an amplifier on and select a source (WHAT 35). Not verified on the bus."""
+    """Turn an amplifier on and select a source (WHAT 35).
+
+    Verified on hardware; it also makes the bus emit the routing events
+    ``*22*21#<mm>#<area>*5#2#<source>##`` and ``*22*2#…``, which say the source
+    was switched on for that area. Kept as an alternative: the integration turns
+    an amplifier on with WHAT 1 and leaves the source where it was.
+    """
     return f"*22*35#{MMTYPE_STEREO}#{area}#{source}*3#{area}#{point}##"
 
 
 def amplifier_off(area: int, point: int) -> str:
-    """Turn an amplifier off, spec form (the area parameter repeats the area)."""
+    """Turn an amplifier off, spec form (the area parameter repeats the area).
+
+    Verified on hardware, and what the integration sends.
+    """
     return f"*22*0#{MMTYPE_STEREO}#{area}*3#{area}#{point}##"
 
 
@@ -452,8 +471,9 @@ def amplifier_off_bus(area: int, point: int) -> str:
     """Turn an amplifier off, in the exact form captured on the bus (area 0).
 
     The area parameter is 0, outside the ``[1-9]`` range the spec gives it. This
-    was captured as the echo of a wall command, so the amplifiers do act on it;
-    :func:`amplifier_off` is the spec form, kept as a fallback.
+    was captured as the echo of a wall command and verified on hardware: both
+    forms turn the amplifier off, answered with ``*12*0*10`` alike. Kept as an
+    alternative to the spec form :func:`amplifier_off`.
     """
     return f"*22*0#{MMTYPE_STEREO}#0*3#{area}#{point}##"
 
@@ -467,19 +487,26 @@ def volume_down(area: int, point: int, step: int = 1) -> str:
 
 
 def volume_set(area: int, point: int, volume: int) -> str:
-    """Write dimension 1 (volume, 0-31) on an amplifier."""
+    """Write dimension 1 (volume, 0-31) on an amplifier.
+
+    Verified absolute on hardware: writing 10 then 14 left the amplifier at 14,
+    not at 24, and the bus echoed ``*#22*3#<a>#<p>*1*<volume>##`` within about
+    150 ms.
+    """
     volume = max(0, min(MAX_VOLUME, int(volume)))
     return f"*#22*3#{area}#{point}*#1*{volume}##"
 
 
 def station_next(source: int = 1) -> str:
-    """Next station, spec form (§3.1.5).
+    """Next station, spec form (§3.1.5). What this integration sends.
 
-    Trails an empty WHAT parameter, which ``OWNCommand`` accepts but flags
-    ``is_valid = False``; since nothing reads that flag on the way out, the
-    frame does reach the bus. Whether the gateway acts on it is unknown — the
-    bus-observed :func:`station_next_from_amplifier` is what this integration
-    sends.
+    Verified on hardware: the tuner moves to the next preset and answers with
+    dimensions 5, 11 and 6 within about 200 ms.
+
+    It trails an empty WHAT parameter, which ``OWNCommand`` accepts but flags
+    ``is_valid = False``. The ``myhome.send_message`` service checks that flag
+    and refuses the frame; ``gateway.send()``, which is what the integration
+    uses, does not.
     """
     return f"*22*9#*2#{source}##"
 
@@ -493,9 +520,9 @@ def station_next_from_amplifier(area: int, point: int) -> str:
     """Next station, addressed as general with the amplifier as the emitter.
 
     ``*22*9*5#3#<a>#<p>##`` was captured as an *event*, emitted by the wall
-    control towards the clients; it is replayed here as a command, which is not
-    the same direction. It is preferred over the spec form only because it is
-    the one that was seen making the tuner move. Both want checking on hardware.
+    control towards the clients; replayed as a command it works all the same,
+    verified on hardware. Kept as an alternative: the integration addresses the
+    source, which is the thing that moves.
     """
     return f"*22*9*5#3#{area}#{point}##"
 
@@ -508,7 +535,7 @@ def station_previous_from_amplifier(area: int, point: int) -> str:
 def frequency_seek_up(source: int = 1, step: Optional[int] = None) -> str:
     """Seek up, automatically (``step`` omitted) or by a given frequency step.
 
-    Spec form (§3.1.5), not confirmed on hardware. Without a step the WHAT
+    Spec form (§3.1.5), **not verified on hardware**. Without a step the WHAT
     parameter is empty, as in :func:`station_next`.
     """
     return f"*22*5#{step if step is not None else ''}*2#{source}##"
@@ -520,13 +547,27 @@ def frequency_seek_down(source: int = 1, step: Optional[int] = None) -> str:
 
 
 def store_station(source: int, station: int) -> str:
-    """Memorise the current frequency on preset ``station``."""
+    """Memorise the current frequency on preset ``station``.
+
+    Spec form, **not verified on hardware**: it overwrites a preset of the
+    installation, which is not something to try to find out.
+    """
     return f"*22*33#{station}*2#{source}##"
 
 
 def set_frequency(source: int, frequency: int, station: int, modulation: int = MODULATION_FM) -> str:
-    """Write dimension 11 on a source: modulation, frequency (x100) and preset."""
+    """Write dimension 11 on a source: modulation, frequency (x100) and preset.
+
+    Spec form, **not verified on hardware**. Unlike the station commands it has
+    no empty WHAT parameter, so ``myhome.send_message`` does accept it.
+    """
     return f"*#22*5#2#{source}*#11*{modulation}*{frequency}*{station}##"
+
+
+# Every request below was verified on hardware, and answered even with the
+# amplifier off — a switched-off amplifier still reports the volume it holds.
+# The source requests are answered by every source of the installation, not only
+# by the one addressed.
 
 
 def request_amplifier_state(area: int, point: int) -> str:
@@ -582,7 +623,7 @@ def format_frequency(frequency: Optional[int], modulation: int = MODULATION_FM) 
     FM frequencies are carried in hundredths of MHz; a trailing zero is dropped
     so the common case reads ``106.0 MHz`` rather than ``106.00 MHz``. Every
     other modulation is an AM band, whose values are kHz. The AM branch is
-    unverified: the installation only has an FM tuner.
+    **not verified on hardware**: the installation only has an FM tuner.
     """
     if frequency is None:
         return None
