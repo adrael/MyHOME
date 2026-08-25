@@ -79,7 +79,10 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
     def __init__(self, hass):
         self.hass = hass
         self.is_connected = True
+        self.generate_events = False
         self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.1.17")
+        # Cancelled by `listening_loop` on its way out.
+        self.listening_worker = types.SimpleNamespace(cancel=lambda: None)
         self.sent = []
         self.status_requests = []
 
@@ -672,3 +675,119 @@ def test_a_reconnection_asks_every_amplifier_and_the_tuner_again(installation):
     for _area, _point, _ in AMPLIFIERS:
         assert _after.count(f"*#22*3#{_area}#{_point}*12##") == 1
         assert _after.count(f"*#22*3#{_area}#{_point}*1##") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Listening loop
+# --------------------------------------------------------------------------- #
+
+
+class FakeEventSession:
+    """Stand-in for `OWNEventSession`, playing a script of frames and failures.
+
+    An `Exception` in the script is raised instead of being returned, which is
+    what OWNd does when the reconnection it attempts on an interrupted read
+    fails in its turn. The loop is asked to stop once the script runs out.
+    """
+
+    def __init__(self, script, handler):
+        self._script = list(script)
+        self._handler = handler
+        self.connects = 0
+        self.closed = False
+
+    async def connect(self):
+        self.connects = self.connects + 1
+
+    async def get_next(self):
+        await asyncio.sleep(0)
+        if not self._script:
+            self._handler._terminate_listener = True
+            # A frame the loop ignores, so nothing is read into the last turn.
+            return "*16*3*22##"
+        _next = self._script.pop(0)
+        if isinstance(_next, Exception):
+            raise _next
+        return _next
+
+    async def close(self):
+        self.closed = True
+
+
+def _run_listening_loop(installation, monkeypatch, script):
+    monkeypatch.setattr(gateway, "EVENT_SESSION_RETRY_DELAY", 0)
+    _session = FakeEventSession(script, installation.handler)
+    monkeypatch.setattr(gateway, "OWNEventSession", lambda gateway, logger: _session)
+    asyncio.run(installation.handler.listening_loop())
+    return _session
+
+
+def test_the_listening_loop_survives_a_session_that_raises(installation, monkeypatch):
+    """`get_next` swallows what it knows about; the rest must not kill the loop.
+
+    A gateway whose listener died is a gateway that never comes back, since
+    nothing else reads the bus.
+    """
+    _session = _run_listening_loop(
+        installation,
+        monkeypatch,
+        ["*#22*3#2#2*12*1*4##", OSError("connection lost"), "*#22*3#2#2*1*18##"],
+    )
+
+    _entity = installation.entity(2, 2)
+    assert _entity.state == PLAYING, "the frames after the failure were handled"
+    assert _entity._raw_volume == 18
+    assert _session.connects == 2, "the session was reopened"
+    assert _session.closed is True
+
+
+def test_a_session_that_raises_is_caught_up_with_once_it_answers_again(installation, monkeypatch):
+    """The failure marks the amplifiers unavailable; the next frame catches up.
+
+    The catch-up only runs on an amplifier the gateway had given up on, so the
+    status requests below are the proof that it did.
+    """
+    _run_listening_loop(
+        installation,
+        monkeypatch,
+        [OSError("connection lost"), "*#22*3#2#2*12*1*4##"],
+    )
+
+    assert installation.handler.status_requests.count("*#22*3#2#2*12##") == 1
+    assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
+
+
+def test_a_session_answering_nothing_warns_once_per_outage(installation, monkeypatch, caplog):
+    """`None` comes back for every failure OWNd meets, and it can come in floods."""
+    with caplog.at_level("WARNING", logger="myhome"):
+        _run_listening_loop(installation, monkeypatch, [None, None, None, "*#22*3#2#2*12*1*4##", None])
+
+    _warnings = [_record for _record in caplog.records if "answered nothing" in _record.getMessage()]
+    assert len(_warnings) == 2, "once when it stopped answering, once after it came back and stopped again"
+
+
+def test_a_reconnection_survives_an_amplifier_that_cannot_be_updated(installation):
+    """One amplifier refusing to talk must not stop the gateway from coming back."""
+
+    async def _fail():
+        raise RuntimeError("the bus said no")
+
+    installation.entity(2, 2).async_update = _fail
+    installation.handler._set_connected(False)
+
+    asyncio.run(installation.handler.reconnected())
+
+    assert installation.handler.is_connected is True
+
+
+def test_a_source_event_that_feeds_nothing_is_not_dispatched(installation):
+    """`SourceState` and the source commands are parsed for the log, and stop there."""
+    installation.replay(["*#22*3#2#2*12*1*4##"])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    for _frame in ("*#22*5#2#1*12*1*4##", "*22*1#4#2*2#1##", "*22*2#4#2*5#2#1##"):
+        installation.handler.handle_sound_diffusion(_frame)
+
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+    assert installation.entity(2, 2).state == PLAYING

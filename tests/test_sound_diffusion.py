@@ -212,6 +212,11 @@ def test_parse_capture_sequence_presets():
     )
 
 
+def test_the_dispatched_source_events_are_the_ones_that_feed_the_store():
+    """The others are parsed for the log: they carry nothing an amplifier reads."""
+    assert sd.SOURCE_EVENTS == (sd.SourceFrequency, sd.SourceFrequencyStation, sd.SourceStation)
+
+
 # --------------------------------------------------------------------------- #
 # Parsing: frames that must be ignored
 # --------------------------------------------------------------------------- #

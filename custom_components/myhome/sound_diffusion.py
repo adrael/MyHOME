@@ -281,13 +281,18 @@ SoundDiffusionEvent = Union[
 
 AMPLIFIER_EVENTS = (AmplifierState, AmplifierVolume, AmplifierCommand)
 BROADCAST_EVENTS = (AreaCommand,)
+
+#: Source events worth dispatching: the ones that feed the shared tuner store.
+#:
+#: ``SourceCommand``, ``SourceRouted`` and ``SourceState`` are parsed all the
+#: same — they make a debug log readable — but they tell an amplifier nothing it
+#: does not already learn from its own dimension 12, and the bus emits them in
+#: bursts (a single WHAT 35 command answered with both a ``21#…`` and a ``2#…``
+#: routing event, verified on hardware).
 SOURCE_EVENTS = (
-    SourceCommand,
-    SourceRouted,
     SourceFrequency,
     SourceFrequencyStation,
     SourceStation,
-    SourceState,
 )
 
 

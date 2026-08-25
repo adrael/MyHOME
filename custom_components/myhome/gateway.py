@@ -82,6 +82,11 @@ from .button import (
     EnableCommandButtonEntity,
 )
 
+#: Seconds to wait before reading the bus again after the event session raised.
+#: Long enough not to spin on a gateway that is down, short enough to be back
+#: within a breath of it coming up.
+EVENT_SESSION_RETRY_DELAY = 1
+
 
 class MyHOMEGatewayHandler:
     """Manages a single MyHOME Gateway."""
@@ -154,7 +159,22 @@ class MyHOMEGatewayHandler:
         self._set_connected(True)
 
         while not self._terminate_listener:
-            message = await _event_session.get_next()
+            try:
+                message = await _event_session.get_next()
+            except Exception:  # pylint: disable=broad-except
+                # `get_next` answers `None` for every failure it knows about, so
+                # anything raising here surprised it — the reconnection it tries
+                # on an interrupted read, most likely. Nothing else reads this
+                # bus: the loop has to outlive it.
+                LOGGER.exception("%s Event session failed.", self.log_id)
+                self._set_connected(False)
+                try:
+                    await _event_session.connect()
+                except Exception:  # pylint: disable=broad-except
+                    LOGGER.exception("%s Could not reopen the event session.", self.log_id)
+                await asyncio.sleep(EVENT_SESSION_RETRY_DELAY)
+                continue
+
             LOGGER.debug("%s Message received: `%s`", self.log_id, message)
 
             if self.generate_events:
@@ -167,8 +187,12 @@ class MyHOMEGatewayHandler:
 
             if message is None:
                 # `OWNEventSession.get_next` answers `None` for every failure it
-                # meets, having reconnected itself on an interrupted read. The
-                # socket is gone until a frame proves otherwise.
+                # meets. It reconnects itself on an interrupted read and on that
+                # one only; whatever it was, the socket is gone until a frame
+                # proves otherwise. Logged once per outage: a session that stops
+                # answering does so in floods.
+                if self.is_connected:
+                    LOGGER.warning("%s Event session answered nothing, waiting for it to come back.", self.log_id)
                 self._set_connected(False)
                 continue
 
@@ -459,8 +483,13 @@ class MyHOMEGatewayHandler:
         for _source in _gateway_data.get(CONF_SOUND_SOURCES, {}).values():
             _source.pop(CONF_TUNER_REQUESTED, None)
 
-        for _entity in self._amplifier_entities():
-            await _entity.async_update()
+        try:
+            for _entity in self._amplifier_entities():
+                await _entity.async_update()
+        except Exception:  # pylint: disable=broad-except
+            # Called from the listening loop, which must not die of it: the
+            # amplifiers are asked again on the next reconnection either way.
+            LOGGER.exception("%s Could not refresh the amplifiers.", self.log_id)
 
     def handle_sound_diffusion(self, raw_message: str) -> None:
         """Dispatch a WHO=22 frame to the relevant media_player entities."""
@@ -510,6 +539,12 @@ class MyHOMEGatewayHandler:
             # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
             _devices = [_device for _device in _configured_amplifiers.values() if int(_device[CONF_WHERE].split("#")[1]) == _event.area]
         else:
+            # Parsed, and that is all it is worth: see `SOURCE_EVENTS`.
+            LOGGER.debug(
+                "%s Sound diffusion event carrying nothing to dispatch: `%s`",
+                self.log_id,
+                _event,
+            )
             return
 
         for _device in _devices:
