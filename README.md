@@ -329,10 +329,13 @@ Two consequences worth knowing:
   dropped rather than shown — see the `preset` attribute above. The band was
   driven from 87.7 to 107.3 MHz, every frequency accepted.
 
-The station commands the integration sends (`*22*9#*2#<source>##` and its
-previous) end on an empty WHAT parameter. OWNd builds the frame but marks it
-invalid, and the `myhome.send_message` service refuses what is marked invalid:
-these two cannot be sent by hand through that service, only by the entity.
+The four frames the tuner buttons send (`*22*5#`, `*22*6#`, `*22*9#`, `*22*10#`,
+all addressed `*2#<source>##`) end on an empty WHAT parameter. OWNd builds them
+but marks them invalid, and the `myhome.send_message` service refuses what is
+marked invalid: none of the four can be sent by hand through that service, only
+by pressing the button — or, for the two station ones, by the amplifier's
+next/previous track. Writing dimension 11, which the frequency uses, has no such
+parameter and goes through `send_message` fine.
 
 ### Experimental / not verified on hardware
 

@@ -514,3 +514,25 @@ def test_the_band_holds_the_frequencies_the_hardware_session_reached():
     """87.7 to 107.3 were driven on the bus on 2026-08-26."""
     assert sd.MIN_FREQUENCY <= 8770
     assert sd.MAX_FREQUENCY >= 10730
+
+
+def test_the_four_tuner_button_frames_are_the_ones_own_d_flags_invalid():
+    """They end on an empty WHAT parameter, so `myhome.send_message` refuses them.
+
+    The README says so; this is what makes the claim true. `gateway.send`, which
+    is what the buttons use, does not look at the flag.
+    """
+    from OWNd.message import OWNCommand
+
+    for _frame in (
+        sd.frequency_seek_up(1),
+        sd.frequency_seek_down(1),
+        sd.station_next(1),
+        sd.station_previous(1),
+    ):
+        _command = OWNCommand(_frame)
+        assert str(_command) == _frame
+        assert _command.is_valid is False
+
+    # Writing dimension 11 carries no empty parameter, and is accepted.
+    assert OWNCommand(sd.set_frequency(1, 10110, 14)).is_valid is True
