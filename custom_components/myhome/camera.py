@@ -23,6 +23,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+import aiohttp
+
 if TYPE_CHECKING:
     from .gateway import MyHOMEGatewayHandler
 
@@ -61,6 +63,13 @@ from .video_door_entry import activate_camera
 #: A snapshot opens a video session and fetches one frame at most this often, in
 #: seconds. The panel is fragile under load, so this is deliberately slow.
 SNAPSHOT_THROTTLE = 2.0
+
+#: Seconds to wait after opening the video session before pulling a frame.
+#: ``send()`` only queues the ``*7*0*`` activation — a separate sending worker
+#: transmits it — so the stream is not live the instant ``send()`` returns; a
+#: short pause lets the panel bring the camera up before the GET. Empirical:
+#: tune on hardware.
+CAMERA_WARMUP = 0.8
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -187,28 +196,47 @@ class MyHOMEDoorCamera(MyHOMEEntity, Camera):
 
         Both arguments are ignored: the panel returns a fixed 320x240 frame, and
         Home Assistant scales it if it needs to.
+
+        The camera password never reaches the log. It rides in the query string,
+        so the request URL — and any aiohttp exception that carries it, a 401
+        being the usual one — must never be interpolated into a log line; a
+        failure is reported by exception type and HTTP status only.
         """
         async with self._fetch_lock:
             _now = time.monotonic()
-            if self._last_image is not None and (_now - self._last_fetch) < SNAPSHOT_THROTTLE:
+            # Throttle on elapsed time alone, never on "do we have an image yet":
+            # a panel stuck on a persistent 401 must not re-open a session and
+            # hammer the bus and the web endpoint on every single call. The stamp
+            # is taken before the fetch so a failure counts against the window too.
+            if self._last_fetch and (_now - self._last_fetch) < SNAPSHOT_THROTTLE:
                 return self._last_image
+            self._last_fetch = _now
 
-            # The stream is dark outside a session, so open one first.
-            await self._gateway_handler.send(OWNCommand(activate_camera(self._camera_where)))
-
-            _url = f"https://{self._host}/telecamera.php?CAM_PASSWD={self._camera_password}"
             try:
+                # The stream is dark outside a session, so open one first, then
+                # give the panel a moment to bring the camera up before pulling.
+                # Activation is inside the try: a failure to queue it must not
+                # take the entity down any more than a failed fetch does.
+                await self._gateway_handler.send(OWNCommand(activate_camera(self._camera_where)))
+                await asyncio.sleep(CAMERA_WARMUP)
+
                 _session = async_get_clientsession(self._hass, self._verify_ssl)
-                async with _session.get(_url) as _response:
+                async with _session.get(
+                    f"https://{self._host}/telecamera.php",
+                    params={"CAM_PASSWD": self._camera_password},
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as _response:
                     _response.raise_for_status()
                     self._last_image = await _response.read()
-                    self._last_fetch = time.monotonic()
             except Exception as _err:  # pylint: disable=broad-except
                 # A snapshot that fails is served as the last one we had, or as
-                # nothing; it must never take the entity down.
+                # nothing; it must never take the entity down. Logged by type and
+                # status only — never the exception itself: its string carries the
+                # request URL, and the URL carries the camera password.
                 LOGGER.warning(
-                    "%s Could not fetch the door camera snapshot: %s",
+                    "%s Could not fetch the door camera snapshot (%s, status %s).",
                     self._gateway_handler.log_id,
-                    _err,
+                    type(_err).__name__,
+                    getattr(_err, "status", None),
                 )
             return self._last_image

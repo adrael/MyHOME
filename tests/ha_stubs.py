@@ -179,6 +179,18 @@ class RestoreEntity(Entity):
         return None
 
 
+class Camera(Entity):
+    """Stand-in for `homeassistant.components.camera.Camera`.
+
+    The real base sets `content_type`, the access-token deque the camera proxy
+    reads and more; none of it is exercised here, so its `__init__` is a no-op
+    that only lets `Camera.__init__(self)` succeed.
+    """
+
+    def __init__(self):
+        pass
+
+
 class SelectEntity(Entity):
     """Stand-in exposing the `_attr_*` fallbacks the real class provides."""
 
@@ -331,6 +343,12 @@ def install():
     )
     _module("homeassistant.helpers.restore_state", RestoreEntity=RestoreEntity)
     _module(
+        "homeassistant.helpers.aiohttp_client",
+        # A test overrides this with a fake session; the default just has to
+        # exist so `camera.py` imports. Never actually used unbypassed.
+        async_get_clientsession=lambda hass, verify_ssl=True: None,
+    )
+    _module(
         "homeassistant.helpers.event",
         # Returns a cancel callback; no real loop schedules the timeout in tests.
         async_call_later=lambda hass, delay, action: (lambda: None),
@@ -369,6 +387,7 @@ def install():
     _event = sys.modules["homeassistant.components.event"]
     _event.EventEntity = EventEntity
     _event.EventDeviceClass = EventDeviceClass
+    sys.modules["homeassistant.components.camera"].Camera = Camera
 
 
 def load(name):
