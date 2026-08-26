@@ -1414,6 +1414,31 @@ def test_a_number_rounded_to_the_bus_unit(installation):
     assert installation.tuner_entity("frequency").native_value == 102.45
 
 
+def test_a_number_off_the_step_is_snapped_onto_it(installation):
+    """A value typed into the box is not on the grid: 87.53 MHz is not a channel."""
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(87.53))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*8755*14##"]
+    assert installation.tuner_entity("frequency").native_value == 87.55
+
+
+@pytest.mark.parametrize(
+    ("written", "sent"),
+    [
+        (87.5, 8750),
+        (87.51, 8750),
+        (87.53, 8755),
+        (99.999, 10000),
+        (108.0, 10800),
+    ],
+)
+def test_every_written_frequency_lands_on_the_step(installation, written, sent):
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(written))
+
+    assert installation.handler.sent == [f"*#22*5#2#1*#11*1*{sent}*14##"]
+    assert installation.tuner[1]["frequency"] % sound_diffusion.FREQUENCY_STEP == 0
+
+
 @pytest.mark.parametrize(
     ("key", "frame"),
     [

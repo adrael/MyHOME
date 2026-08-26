@@ -94,6 +94,11 @@ class MyHOMETunerFrequency(MyHOMETunerEntity, NumberEntity):
     _attr_native_min_value = MIN_FREQUENCY / 100
     _attr_native_max_value = MAX_FREQUENCY / 100
     _attr_native_step = FREQUENCY_STEP / 100
+    # `AUTO` and not `SLIDER`: the band holds 410 steps, and Home Assistant
+    # turns a range that long into a text box in the more-info dialog rather
+    # than a slider nobody can land on a channel with. The slider of the
+    # dashboard is the `numeric-input` tile feature, which asks for one; see
+    # `examples/dashboard-radios.yaml`.
     _attr_mode = NumberMode.AUTO
     _attr_icon = "mdi:sine-wave"
 
@@ -145,8 +150,13 @@ class MyHOMETunerFrequency(MyHOMETunerEntity, NumberEntity):
         what makes the slider feel immediate, and leaves the echo with nothing
         new to say. Both the frequency and the preset are recorded, exactly as
         `select_source` does — the preset is what the tuner will report.
+
+        Snapped onto the step first: the box of the more-info dialog takes any
+        value, 87.53 MHz included, and the tuner has no such channel. Rounding
+        it here rather than sending it is what keeps the echo silent — the store
+        holds the frequency the tuner will answer with, not the one asked for.
         """
-        _frequency = round(value * 100)
+        _frequency = round(value * 100 / FREQUENCY_STEP) * FREQUENCY_STEP
         _preset = self._tuning_preset
 
         self._gateway_handler.refresh_sound_source(
