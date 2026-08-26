@@ -594,8 +594,10 @@ class MyHOMEGatewayHandler:
         it, `update_sound_source` finds nothing new in the echo and the
         amplifiers are written once, not twice.
 
-        Every amplifier of the gateway is handed the event, as `handle_event`
-        alone knows which source its entity is listening to.
+        Every sound diffusion entity of the gateway is handed the event — the
+        amplifiers and the tuner devices — as `handle_event` alone knows which
+        source its entity is listening to. The seek buttons come through here
+        too, to drop a preset the scan they are about to send leaves behind.
         """
         if not self.update_sound_source(event):
             return

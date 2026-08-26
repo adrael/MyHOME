@@ -1128,12 +1128,15 @@ def test_a_stale_preset_is_left_out_of_the_attributes(installation):
 def test_a_seek_button_writes_the_amplifiers_once(installation):
     """The optimistic drop is a state change like any other: one write, not two."""
     installation.replay(["*#22*5#2#1*11*1*10680*15##"])
-    for _entity in installation.entities.values():
+    for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values()):
         _entity.written_states = 0
 
     asyncio.run(installation.tuner_entity("seek_up").async_press())
 
     assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+    # The tuner's own entities read the same store: the Preset row of the
+    # dashboard is what the drop is early for.
+    assert installation.tuner_entity("frequency").written_states == 1
 
 
 def test_a_seek_button_on_a_tuner_nobody_heard_from_writes_nothing(installation):
