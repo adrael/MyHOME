@@ -34,6 +34,7 @@ from homeassistant.components.camera import (
 from homeassistant.const import (
     CONF_NAME,
     CONF_MAC,
+    CONF_ENTITIES,
 )
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 

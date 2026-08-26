@@ -362,12 +362,21 @@ def _add_video_door_entry_devices(platforms: dict, video_door_entry) -> None:
     for _platform in VIDEO_DOOR_ENTRY_PLATFORMS:
         platforms.setdefault(_platform, {})
 
-    for _panel in video_door_entry.values():
+    _seen = {}
+    for _key, _panel in video_door_entry.items():
         _entrance = _panel[CONF_ENTRANCE_ADDRESS]
         _lock = _panel[CONF_LOCK_ADDRESS] if _panel.get(CONF_LOCK_ADDRESS) is not None else _entrance
         _password = _panel.get(CONF_CAMERA_PASSWORD)
         # `8-<entrance address>`, so a second panel on the same bus keys apart.
+        # Two panels on the same address would key onto one another; refused
+        # rather than silently kept as whichever came last in the file.
         _device_id = f"8-{_entrance}"
+        if _device_id in _seen:
+            raise Invalid(
+                f"Invalid video door entry configuration, `{_seen[_device_id]}` and `{_key}` are both on "
+                f"entrance address {_entrance} and only one of them would be kept."
+            )
+        _seen[_device_id] = _key
 
         def _device() -> dict:
             return {

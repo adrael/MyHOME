@@ -215,6 +215,31 @@ def test_the_call_sensor_is_a_running_sensor(installation):
     assert installation.call._attr_unique_id == f"{MAC}-8-20-call"
 
 
+def test_two_panels_on_the_same_entrance_address_are_refused():
+    """They would key onto one device id and one would be silently dropped."""
+    _cfg = (
+        "house:\n"
+        f'  mac: "{MAC}"\n'
+        "  video_door_entry:\n"
+        "    gate: { name: Gate, entrance_address: 20 }\n"
+        "    door: { name: Door, entrance_address: 20 }\n"
+    )
+    with pytest.raises(Exception):
+        validate.config_schema(yaml.safe_load(_cfg))
+
+
+def test_two_panels_on_different_addresses_are_both_kept():
+    _cfg = (
+        "house:\n"
+        f'  mac: "{MAC}"\n'
+        "  video_door_entry:\n"
+        "    gate: { name: Gate, entrance_address: 20 }\n"
+        "    door: { name: Door, entrance_address: 21 }\n"
+    )
+    _platforms = validate.config_schema(yaml.safe_load(_cfg))[MAC]["platforms"]
+    assert sorted(_platforms["event"].keys()) == ["8-20", "8-21"]
+
+
 def test_the_camera_platform_appears_only_with_a_password():
     without = Installation(with_panel=True, with_camera=False)
     assert "camera" not in without._platforms

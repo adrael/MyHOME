@@ -317,7 +317,7 @@ def install():
         return
 
     _module("homeassistant")
-    _module("homeassistant.core", HomeAssistant=object)
+    _module("homeassistant.core", HomeAssistant=object, callback=lambda func: func)
     _module(
         "homeassistant.exceptions",
         HomeAssistantError=HomeAssistantError,

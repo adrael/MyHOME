@@ -11,6 +11,7 @@ from homeassistant.const import (
     CONF_ENTITIES,
     STATE_ON,
 )
+from homeassistant.core import callback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.event import async_call_later
 
@@ -418,11 +419,14 @@ class MyHOMEVideoDoorEntryCall(MyHOMEEntity, BinarySensorEntity):
             self._cancel_timeout()
             self._cancel_timeout = None
 
+    @callback
     def _call_timed_out(self, _now) -> None:
         """Safety net: no end frame arrived, so drop the call after the timeout.
 
         `async_call_later` hands the callback the current time; the argument is
-        taken and ignored.
+        taken and ignored. `@callback` keeps it on the event loop — a bare sync
+        target is run in an executor thread, where `async_write_ha_state` is
+        illegal.
         """
         self._cancel_timeout = None
         if self._attr_is_on:
