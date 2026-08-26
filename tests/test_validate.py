@@ -16,6 +16,7 @@ import ha_stubs  # noqa: E402
 validate = ha_stubs.load("validate")
 const = ha_stubs.load("const")
 sound_diffusion = ha_stubs.load("sound_diffusion")
+tuner = ha_stubs.load("tuner")
 
 MAC = "00:03:50:11:22:33"
 REPOSITORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -344,18 +345,79 @@ def _dashboard_cards():
     return [_card for _section in _dashboard_view()["sections"] for _card in _section["cards"]]
 
 
+#: The five entities of the tuner device, as `validate.py` and `tuner.py` name
+#: them once Home Assistant has slugified "Tuner FM" + the entity name.
+TUNER_ENTITIES = [
+    "number.tuner_fm_frequency",
+    "button.tuner_fm_seek_up",
+    "button.tuner_fm_seek_down",
+    "button.tuner_fm_next_preset",
+    "button.tuner_fm_previous_preset",
+]
+
+
+def _dashboard_features(entity):
+    return [_feature for _card in _dashboard_cards() if _card.get("entity") == entity for _feature in _card.get("features", [])]
+
+
+def test_the_documented_tuner_entity_ids_are_the_ones_the_code_produces():
+    """`has_entity_name`: Home Assistant slugifies the device name plus the entity's.
+
+    Neither the device name nor the four button names can drift without the
+    entity ids of the README and of the dashboard drifting with them.
+    """
+    _device_name = _amplifiers(kitchen=1)["number"]["22-2#1"]["name"]
+
+    def _slug(platform, entity_name):
+        return platform + "." + re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", f"{_device_name} {entity_name}".lower())).strip("_")
+
+    assert _slug("number", "Frequency") == "number.tuner_fm_frequency"
+    assert [_slug("button", _name) for _key, _name, _icon, _frame in tuner.TUNER_BUTTONS] == TUNER_ENTITIES[1:]
+
+
+def test_the_readme_documents_every_tuner_entity():
+    with open(os.path.join(REPOSITORY, "README.md"), encoding="utf-8") as _file:
+        _readme = _file.read()
+
+    for _entity in TUNER_ENTITIES:
+        assert f"`{_entity}`" in _readme, f"{_entity} is created but never documented"
+
+
 def test_the_dashboard_addresses_exactly_the_amplifiers_of_the_readme():
     _expected = _readme_amplifiers()
+    _referenced = _referenced_entities(_dashboard_view())
 
     assert len(_expected) == 10
-    assert set(_referenced_entities(_dashboard_view())) == set(_expected)
+    assert set(_entity for _entity in _referenced if _entity.startswith("media_player.")) == set(_expected)
+
+
+def test_the_dashboard_carries_the_five_tuner_entities():
+    """One tuner, one section: the frequency and the four buttons, nothing twice."""
+    _referenced = _referenced_entities(_dashboard_view())
+    _tuner = [_entity for _entity in _referenced if not _entity.startswith("media_player.")]
+
+    assert sorted(_tuner) == sorted(TUNER_ENTITIES)
+    assert len(_tuner) == len(set(_tuner)), "a station control repeated is a station moved twice"
+
+
+def test_the_dashboard_drives_the_frequency_with_a_slider():
+    assert _dashboard_features("number.tuner_fm_frequency") == [{"type": "numeric-input", "style": "slider"}]
+
+
+def test_the_dashboard_keeps_the_station_dropdown_on_the_kitchen_tile():
+    _features = _dashboard_features("media_player.radio_cuisine")
+
+    assert {"type": "media-player-source"} in _features
+    assert [_card["entity"] for _card in _dashboard_cards() if {"type": "media-player-source"} in _card.get("features", [])] == [
+        "media_player.radio_cuisine"
+    ]
 
 
 def test_the_dashboard_lists_the_rooms_in_the_order_of_the_readme():
     """One order for the whole documentation, so the three lists cannot drift."""
     _expected = _readme_amplifiers()
 
-    _tiles = [_card["entity"] for _card in _dashboard_cards() if _card.get("type") == "tile"]
+    _tiles = [_card["entity"] for _card in _dashboard_cards() if _card.get("type") == "tile" and _card["entity"].startswith("media_player.")]
     assert _tiles == _expected
 
     _all_off = [_card for _card in _dashboard_cards() if _card.get("type") == "button" and "every amplifier off" in _card["name"]]

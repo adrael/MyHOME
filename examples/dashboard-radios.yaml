@@ -2,11 +2,12 @@
 #
 # Requires Home Assistant 2025.1 or later. What each version brought:
 # `perform-action` and the services -> actions rename 2024.8, the `sections`
-# view and the `heading` card 2024.10, the `media-player-volume-slider` tile
-# feature 2025.1 (the floor), its `show_mute_button` option 2026.6, and the
-# `media-player-source` feature — the station dropdown — 2026.5. On an older
-# version drop that one feature and pick the station from the amplifier's
-# more-info dialog, where the Source menu sits whatever the version.
+# view and the `heading` card 2024.10, the `numeric-input` tile feature 2024.11,
+# the `media-player-volume-slider` tile feature 2025.1 (the floor), its
+# `show_mute_button` option 2026.6, and the `media-player-source` feature — the
+# station dropdown — 2026.5. On an older version drop that one feature and pick
+# the station from the amplifier's more-info dialog, where the Source menu sits
+# whatever the version.
 #
 # Paste the `- title: Radios` item below INTO the `views:` list your dashboard
 # already has ("Edit dashboard" > 3-dot menu > "Raw configuration editor").
@@ -15,11 +16,12 @@
 # Entity ids follow the `name:` of the amplifiers in `myhome.yaml`:
 # "Radio Cuisine" gives `media_player.radio_cuisine`.
 #
-# One tuner is shared by every amplifier, so the station is shown once, at the
-# top, and the station controls address a single reference amplifier — the
-# kitchen one. The tuner attributes are published whether an amplifier is
-# playing or not, so those three rows stay readable with the whole house
-# switched off.
+# One tuner is shared by every amplifier, so it is shown once, at the top, as
+# its own device: three attribute rows saying what it plays, its frequency as a
+# slider, and its four buttons. Nothing in that section addresses an amplifier,
+# which is why none of it can be pointed at a group by mistake. The tuner
+# attributes are published whether an amplifier is playing or not, so those rows
+# stay readable with the whole house switched off.
 #
 # One tile per amplifier:
 #   tap on the icon   -> toggles that amplifier (`media_player.toggle`)
@@ -28,7 +30,8 @@
 #   under the name    -> its state and "106.0 MHz · SUD RADIO"
 #
 # A blank "Station" row means the frequency the tuner reports is not in the
-# station table; see the `radio_stations` option of the gateway.
+# station table; see the `radio_stations` option of the gateway. A blank
+# "Preset" row means the tuner left the slot it was on — a seek does that.
 #
 # Card widths follow the Home Assistant defaults for sections; on 2024.11+ you
 # can pin them with `grid_options: {columns: 6}` per card.
@@ -65,27 +68,29 @@ views:
                 attribute: preset
                 name: Preset
                 icon: mdi:numeric
-            footer:
-              type: buttons
-              entities:
-                - entity: media_player.radio_cuisine
-                  name: Previous
-                  icon: mdi:skip-previous
-                  show_name: true
-                  tap_action:
-                    action: perform-action
-                    perform_action: media_player.media_previous_track
-                    target:
-                      entity_id: media_player.radio_cuisine
-                - entity: media_player.radio_cuisine
-                  name: Next
-                  icon: mdi:skip-next
-                  show_name: true
-                  tap_action:
-                    action: perform-action
-                    perform_action: media_player.media_next_track
-                    target:
-                      entity_id: media_player.radio_cuisine
+          # The tuner's own frequency, in MHz. Dragging it retunes the box, and
+          # spends the `tuning_preset` slot doing so — see the README.
+          - type: tile
+            entity: number.tuner_fm_frequency
+            name: Frequency
+            icon: mdi:sine-wave
+            features:
+              - type: numeric-input
+                style: slider
+          # The four buttons of the tuner device. They address the source, not
+          # an amplifier, so there is nothing here to point at a group by
+          # mistake.
+          - type: entities
+            state_color: false
+            entities:
+              - entity: button.tuner_fm_previous_preset
+                name: Previous preset
+              - entity: button.tuner_fm_next_preset
+                name: Next preset
+              - entity: button.tuner_fm_seek_down
+                name: Seek down
+              - entity: button.tuner_fm_seek_up
+                name: Seek up
           - type: button
             name: Turn every amplifier off
             icon: mdi:speaker-off
@@ -321,7 +326,8 @@ views:
               - type: media-player-volume-slider
                 show_mute_button: false
 
-# The station controls address one reference amplifier, the kitchen one, and
-# nothing else. Never point them at a group or repeat them on every tile: for
-# next/previous each member would ask the shared tuner to move and the station
-# would jump once per member.
+# The station dropdown sits on the kitchen tile alone. Never repeat it on every
+# tile and never point a station control at a group: for next/previous each
+# member would ask the shared tuner to move and the station would jump once per
+# member. The four buttons of the Tuner section address the source itself, so
+# they have that problem by construction — there is one of each, for one tuner.
