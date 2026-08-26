@@ -33,6 +33,8 @@ _PLATFORMS = [
     "media_player",
     "number",
     "select",
+    "event",
+    "camera",
 ]
 
 
@@ -125,6 +127,58 @@ class NumberEntity(Entity):
         return self._attr_device_class
 
 
+class EventEntity(Entity):
+    """Stand-in for `homeassistant.components.event.EventEntity`.
+
+    `_trigger_event` validates the type against `event_types`, as the real class
+    does, and records every fire so a test can count the rings. A typo in the
+    event type raises rather than firing a state nobody declared.
+    """
+
+    _attr_event_types = []
+    _attr_device_class = None
+
+    @property
+    def event_types(self):
+        return self._attr_event_types
+
+    @property
+    def device_class(self):
+        return self._attr_device_class
+
+    def _trigger_event(self, event_type, event_attributes=None):
+        if event_type not in self.event_types:
+            raise ValueError(f"{type(self).__name__} has no event type named {event_type}")
+        self.last_event_type = event_type
+        self.last_event_attributes = event_attributes
+        if "triggered_events" not in self.__dict__:
+            self.triggered_events = []
+        self.triggered_events.append((event_type, event_attributes))
+
+
+class BinarySensorEntity(Entity):
+    """Stand-in exposing the `_attr_*` fallbacks the real class provides."""
+
+    _attr_is_on = None
+    _attr_device_class = None
+    _attr_force_update = False
+
+    @property
+    def is_on(self):
+        return self._attr_is_on
+
+    @property
+    def device_class(self):
+        return self._attr_device_class
+
+
+class RestoreEntity(Entity):
+    """Stand-in for `homeassistant.helpers.restore_state.RestoreEntity`."""
+
+    async def async_get_last_state(self):
+        return None
+
+
 class SelectEntity(Entity):
     """Stand-in exposing the `_attr_*` fallbacks the real class provides."""
 
@@ -205,6 +259,10 @@ class SensorDeviceClass(metaclass=_StringEnumMeta):
     _members = ("ENERGY", "HUMIDITY", "ILLUMINANCE", "POWER", "PRESSURE", "TEMPERATURE", "VOLTAGE")
 
 
+class EventDeviceClass(metaclass=_StringEnumMeta):
+    _members = ("BUTTON", "DOORBELL", "MOTION")
+
+
 class MediaPlayerDeviceClass(metaclass=_StringEnumMeta):
     _members = ("RECEIVER", "SPEAKER", "TV")
 
@@ -271,6 +329,12 @@ def install():
         "homeassistant.helpers.device_registry",
         format_mac=lambda mac: ":".join(mac.lower()[i : i + 2] for i in range(0, 12, 2)),
     )
+    _module("homeassistant.helpers.restore_state", RestoreEntity=RestoreEntity)
+    _module(
+        "homeassistant.helpers.event",
+        # Returns a cancel callback; no real loop schedules the timeout in tests.
+        async_call_later=lambda hass, delay, action: (lambda: None),
+    )
     _module(
         "homeassistant.const",
         CONF_NAME="name",
@@ -280,6 +344,7 @@ def install():
         CONF_PORT="port",
         CONF_PASSWORD="password",
         CONF_FRIENDLY_NAME="friendly_name",
+        STATE_ON="on",
         EntityCategory=EntityCategory,
     )
     _module("homeassistant.components")
@@ -288,6 +353,7 @@ def install():
 
     sys.modules["homeassistant.components.switch"].SwitchDeviceClass = SwitchDeviceClass
     sys.modules["homeassistant.components.binary_sensor"].BinarySensorDeviceClass = BinarySensorDeviceClass
+    sys.modules["homeassistant.components.binary_sensor"].BinarySensorEntity = BinarySensorEntity
     sys.modules["homeassistant.components.sensor"].SensorDeviceClass = SensorDeviceClass
     sys.modules["homeassistant.components.button"].ButtonEntity = type("ButtonEntity", (Entity,), {})
     _media_player = sys.modules["homeassistant.components.media_player"]
@@ -300,6 +366,9 @@ def install():
     _number.NumberEntity = NumberEntity
     _number.NumberMode = NumberMode
     sys.modules["homeassistant.components.select"].SelectEntity = SelectEntity
+    _event = sys.modules["homeassistant.components.event"]
+    _event.EventEntity = EventEntity
+    _event.EventDeviceClass = EventDeviceClass
 
 
 def load(name):
