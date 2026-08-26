@@ -18,18 +18,22 @@ from homeassistant.const import (
     EntityCategory,
 )
 
+from OWNd.message import OWNCommand
+
 from .const import (
     CONF_PLATFORMS,
     CONF_ENTITY,
     CONF_WHO,
     CONF_WHERE,
     CONF_BUS_INTERFACE,
+    CONF_LOCK_ADDRESS,
     CONF_MANUFACTURER,
     CONF_DEVICE_MODEL,
     DOMAIN,
 )
 from .myhome_device import MyHOMEEntity
 from .tuner import tuner_buttons
+from .video_door_entry import open_lock
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -53,6 +57,24 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     gateway=hass.data[DOMAIN][config_entry.data[CONF_MAC]][
                         CONF_ENTITY
                     ],
+                )
+            )
+            continue
+
+        if _configured_buttons[_button][CONF_WHO] == "8":
+            # A video door entry panel: its one button opens the gate strike. It
+            # has no command to lock either, so it skips the Disable/Enable pair.
+            _buttons.append(
+                MyHOMEVideoDoorEntryButton(
+                    hass=hass,
+                    device_id=_button,
+                    who=_configured_buttons[_button][CONF_WHO],
+                    where=_configured_buttons[_button][CONF_WHERE],
+                    name=_configured_buttons[_button][CONF_NAME],
+                    lock_address=_configured_buttons[_button][CONF_LOCK_ADDRESS],
+                    manufacturer=_configured_buttons[_button][CONF_MANUFACTURER],
+                    model=_configured_buttons[_button][CONF_DEVICE_MODEL],
+                    gateway=hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_ENTITY],
                 )
             )
             continue
@@ -258,3 +280,57 @@ class EnableCommandButtonEntity(ButtonEntity, MyHOMEEntity):
     async def async_press(self) -> None:
         """Press the button."""
         await self._gateway_handler.send(f"*14*1*{self._full_where}##")
+
+
+class MyHOMEVideoDoorEntryButton(ButtonEntity, MyHOMEEntity):
+    """The "Open" button of an entrance panel: pulses the gate strike open."""
+
+    def __init__(
+        self,
+        hass,
+        name: str,
+        device_id: str,
+        who: str,
+        where: str,
+        lock_address: int,
+        manufacturer: str,
+        model: str,
+        gateway: MyHOMEGatewayHandler,
+    ):
+        super().__init__(
+            hass=hass,
+            name=name,
+            platform=PLATFORM,
+            device_id=device_id,
+            who=who,
+            where=where,
+            manufacturer=manufacturer,
+            model=model,
+            gateway=gateway,
+        )
+        self._attr_name = "Open"
+        self._attr_has_entity_name = True
+        self._attr_icon = "mdi:gate-open"
+        self._attr_unique_id = f"{gateway.mac}-{self._device_id}-open"
+        self._lock_address = lock_address
+
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        self._hass.data[DOMAIN][self._gateway_handler.mac][CONF_PLATFORMS][self._platform][self._device_id][CONF_ENTITIES]["open"] = self
+
+    async def async_will_remove_from_hass(self):
+        """When entity is removed from hass."""
+        _entities = self._hass.data[DOMAIN][self._gateway_handler.mac][CONF_PLATFORMS][self._platform][self._device_id][CONF_ENTITIES]
+        if "open" in _entities:
+            del _entities["open"]
+
+    async def async_press(self) -> None:
+        """Pulse the gate strike open: energise, then release.
+
+        Verified on hardware that ``*8*19*<addr>##`` opens the strike; the
+        release ``*8*20*<addr>##`` follows. The two frames are queued in order,
+        and with the default single sending worker they leave the gateway in
+        that order — see the README limitations for a bus run with several.
+        """
+        for _frame in open_lock(self._lock_address):
+            await self._gateway_handler.send(OWNCommand(_frame))

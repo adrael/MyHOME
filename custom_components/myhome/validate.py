@@ -33,9 +33,12 @@ from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.components.number import DOMAIN as NUMBER
 from homeassistant.components.select import DOMAIN as SELECT
+from homeassistant.components.event import DOMAIN as EVENT
+from homeassistant.components.camera import DOMAIN as CAMERA
 from homeassistant.const import CONF_NAME, CONF_MAC
 
 from .sound_diffusion import DEFAULT_TUNING_PRESET, MAX_STATION_PRESET, tuner_device_id
+from .video_door_entry import DEFAULT_CAMERA_WHERE, DEFAULT_ENTRANCE_ADDRESS
 
 from .const import (
     CONF_PLATFORMS,
@@ -61,6 +64,14 @@ from .const import (
     CONF_COOLING_SUPPORT,
     CONF_STANDALONE,
     CONF_CENTRAL,
+    CONF_VIDEO_DOOR_ENTRY,
+    CONF_ENTRANCE_ADDRESS,
+    CONF_LOCK_ADDRESS,
+    CONF_CAMERA_WHERE,
+    CONF_CAMERA_PASSWORD,
+    CONF_CAMERA_HOST,
+    CONF_CALL_TIMEOUT,
+    CONF_VERIFY_SSL,
 )
 
 
@@ -238,7 +249,9 @@ class BusInterface(object):
 #: Keys of a gateway that configure the gateway itself rather than a platform.
 #: `tuning_preset` carries a default, so it is present on every gateway, media
 #: player or not: forgetting it here would break installations that have none.
-GATEWAY_OPTIONS = (CONF_RADIO_STATIONS, CONF_TUNING_PRESET)
+#: `video_door_entry` is not a platform either — it is expanded below into the
+#: `event`, `button`, `binary_sensor` and `camera` devices of its panels.
+GATEWAY_OPTIONS = (CONF_RADIO_STATIONS, CONF_TUNING_PRESET, CONF_VIDEO_DOOR_ENTRY)
 
 
 class MyHomeConfigSchema(Schema):
@@ -279,6 +292,10 @@ class MyHomeConfigSchema(Schema):
                             _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][BUTTON][key] = value
 
             _add_tuner_devices(_rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS])
+            _add_video_door_entry_devices(
+                _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS],
+                _rekeyed_data[data[gateway][CONF_MAC]].get(CONF_VIDEO_DOOR_ENTRY),
+            )
 
         return _rekeyed_data
 
@@ -320,6 +337,73 @@ def _add_tuner_devices(platforms: dict) -> None:
                 CONF_DEVICE_MODEL: None,
                 CONF_ENTITIES: {},
             }
+
+
+#: Platforms an entrance panel is expanded into. `camera` is added per panel,
+#: only when that panel carries a camera password.
+VIDEO_DOOR_ENTRY_PLATFORMS = (EVENT, BUTTON, BINARY_SENSOR)
+
+
+def _add_video_door_entry_devices(platforms: dict, video_door_entry) -> None:
+    """Expand each configured entrance panel into its standard-platform devices.
+
+    Nothing under `video_door_entry:` is a Home Assistant platform; a panel is a
+    doorbell `event`, an "Open" `button`, a "Call in progress" `binary_sensor`
+    and — when it has a camera password — a `camera`. They are built here, which
+    is what gets those platforms into `CONF_PLATFORMS`, the keys `__init__.py`
+    forwards to `async_forward_entry_setups` and prunes the registry against.
+
+    A fresh device dict per platform, like `_add_tuner_devices`: `button.py`
+    empties its own on unload and must not take the others down with it.
+    """
+    if not video_door_entry:
+        return
+
+    for _platform in VIDEO_DOOR_ENTRY_PLATFORMS:
+        platforms.setdefault(_platform, {})
+
+    _seen = {}
+    for _key, _panel in video_door_entry.items():
+        _entrance = _panel[CONF_ENTRANCE_ADDRESS]
+        _lock = _panel[CONF_LOCK_ADDRESS] if _panel.get(CONF_LOCK_ADDRESS) is not None else _entrance
+        _password = _panel.get(CONF_CAMERA_PASSWORD)
+        # `8-<entrance address>`, so a second panel on the same bus keys apart.
+        # Two panels on the same address would key onto one another; refused
+        # rather than silently kept as whichever came last in the file.
+        _device_id = f"8-{_entrance}"
+        if _device_id in _seen:
+            raise Invalid(
+                f"Invalid video door entry configuration, `{_seen[_device_id]}` and `{_key}` are both on "
+                f"entrance address {_entrance} and only one of them would be kept."
+            )
+        _seen[_device_id] = _key
+
+        def _device() -> dict:
+            return {
+                CONF_WHO: "8",
+                CONF_WHERE: str(_entrance),
+                CONF_NAME: _panel[CONF_NAME],
+                CONF_ENTRANCE_ADDRESS: _entrance,
+                CONF_LOCK_ADDRESS: _lock,
+                CONF_CAMERA_WHERE: _panel[CONF_CAMERA_WHERE],
+                CONF_CAMERA_PASSWORD: _password,
+                CONF_CAMERA_HOST: _panel.get(CONF_CAMERA_HOST),
+                CONF_VERIFY_SSL: _panel[CONF_VERIFY_SSL],
+                CONF_CALL_TIMEOUT: _panel[CONF_CALL_TIMEOUT],
+                CONF_ENTITY_NAME: _panel.get(CONF_ENTITY_NAME),
+                CONF_ICON: _panel.get(CONF_ICON),
+                # `binary_sensor.async_setup_entry` reads this key unconditionally.
+                CONF_DEVICE_CLASS: None,
+                CONF_MANUFACTURER: _panel[CONF_MANUFACTURER],
+                CONF_DEVICE_MODEL: _panel.get(CONF_DEVICE_MODEL),
+                CONF_ENTITIES: {},
+            }
+
+        for _platform in VIDEO_DOOR_ENTRY_PLATFORMS:
+            platforms[_platform][_device_id] = _device()
+        if _password:
+            platforms.setdefault(CAMERA, {})
+            platforms[CAMERA][_device_id] = _device()
 
 
 class MyHomeDeviceSchema(Schema):
@@ -553,6 +637,29 @@ media_player_schema = MyHomeDeviceSchema(
     }
 )
 
+video_door_entry_schema = Schema(
+    {
+        Required(str): {
+            Required(CONF_NAME): str,
+            Optional(CONF_ENTRANCE_ADDRESS, default=DEFAULT_ENTRANCE_ADDRESS): All(Coerce(int), Range(min=0)),
+            # Defaults to the entrance address; resolved when the device is built.
+            Optional(CONF_LOCK_ADDRESS): All(Coerce(int), Range(min=0)),
+            Optional(CONF_CAMERA_WHERE, default=DEFAULT_CAMERA_WHERE): All(Coerce(int), Range(min=0)),
+            # In clear, or the MD5 hash of the OPEN bus password: `telecamera.php`
+            # takes whatever the panel's own web page sends. Kept out of the code.
+            Optional(CONF_CAMERA_PASSWORD): Coerce(str),
+            Optional(CONF_CAMERA_HOST): str,
+            # The panel serves the snapshot over HTTPS with a self-signed cert.
+            Optional(CONF_VERIFY_SSL, default=False): Boolean(),
+            Optional(CONF_CALL_TIMEOUT, default=60): All(Coerce(int), Range(min=1)),
+            Optional(CONF_ENTITY_NAME): str,
+            Optional(CONF_ICON): str,
+            Optional(CONF_MANUFACTURER, default="BTicino S.p.A."): str,
+            Optional(CONF_DEVICE_MODEL): Coerce(str),
+        }
+    }
+)
+
 gateway_schema = Schema(
     {
         Required(CONF_MAC): MacAddress(),
@@ -563,6 +670,7 @@ gateway_schema = Schema(
         Optional(SENSOR): sensor_schema,
         Optional(CLIMATE): climate_schema,
         Optional(MEDIA_PLAYER): media_player_schema,
+        Optional(CONF_VIDEO_DOOR_ENTRY): video_door_entry_schema,
         Optional(CONF_RADIO_STATIONS): RadioStations(),
         Optional(CONF_TUNING_PRESET, default=DEFAULT_TUNING_PRESET): All(Coerce(int), Range(min=1, max=MAX_STATION_PRESET)),
     }

@@ -32,6 +32,7 @@ from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.components.number import DOMAIN as NUMBER
 from homeassistant.components.select import DOMAIN as SELECT
+from homeassistant.components.event import DOMAIN as EVENT
 
 from OWNd.connection import OWNSession, OWNEventSession, OWNCommandSession, OWNGateway
 from OWNd.message import (
@@ -87,6 +88,7 @@ from .button import (
     DisableCommandButtonEntity,
     EnableCommandButtonEntity,
 )
+from .video_door_entry import parse_video_door_entry
 
 #: Seconds to wait before reading the bus again after the event session raised.
 #: Long enough not to spin on a gateway that is down, short enough to be back
@@ -297,6 +299,13 @@ class MyHOMEGatewayHandler:
 
                 _who = frame_who(_raw_message)
                 if _who in IGNORED_WHOS:
+                    # Video door entry (WHO=8, and the WHO=6/7 frames of a call):
+                    # dispatched when a `video_door_entry` panel is configured,
+                    # and only then. Without one the handler answers False and
+                    # the frame falls through to the debug line below — nothing
+                    # changes on an installation that has no panel.
+                    if self.handle_video_door_entry(_raw_message):
+                        continue
                     # A frame of a system this integration does not support and
                     # OWNd does not model: worth a line, not a warning.
                     LOGGER.debug(
@@ -655,6 +664,54 @@ class MyHOMEGatewayHandler:
             for _entity in _device[CONF_ENTITIES]:
                 if isinstance(_device[CONF_ENTITIES][_entity], MyHOMEEntity):
                     _device[CONF_ENTITIES][_entity].handle_event(_event)
+
+    def _video_door_entry_devices(self, platform: str):
+        """Every device of `platform` that is a video door entry panel (WHO=8)."""
+        _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
+        if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
+            return
+        for _device in _gateway_data[CONF_PLATFORMS].get(platform, {}).values():
+            if _device.get(CONF_WHO) == "8":
+                yield _device
+
+    def handle_video_door_entry(self, raw_message: str) -> bool:
+        """Dispatch a WHO=8 frame to the doorbell and call-in-progress entities.
+
+        Answers whether video door entry is configured on this gateway: True has
+        the listener treat the frame as handled and stay quiet, False lets it
+        fall through to the "unsupported WHO" debug line, so an installation
+        without a panel behaves exactly as it did before.
+
+        Like `handle_sound_diffusion`, this tolerates a gateway key that is gone
+        or half built — the listener outlives both ends of a reload.
+        """
+        _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
+        if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
+            return False
+
+        _event_devices = list(self._video_door_entry_devices(EVENT))
+        _sensor_devices = list(self._video_door_entry_devices(BINARY_SENSOR))
+        if not _event_devices and not _sensor_devices:
+            # No panel configured: not ours to handle.
+            return False
+
+        _event = parse_video_door_entry(raw_message)
+        if _event is None:
+            LOGGER.debug(
+                "%s Ignoring video door entry message: `%s`",
+                self.log_id,
+                raw_message,
+            )
+            return True
+
+        # A ring does not carry the panel address, so it cannot be matched to one
+        # panel: every configured panel is handed the event — normally the only
+        # one — and each entity decides what the event means to it.
+        for _device in _event_devices + _sensor_devices:
+            for _entity in _device[CONF_ENTITIES].values():
+                if isinstance(_entity, MyHOMEEntity):
+                    _entity.handle_event(_event)
+        return True
 
     def refresh_sound_source(self, event) -> None:
         """Record a tuning the integration just commanded, and show it at once.

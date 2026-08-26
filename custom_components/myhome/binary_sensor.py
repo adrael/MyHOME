@@ -11,7 +11,9 @@ from homeassistant.const import (
     CONF_ENTITIES,
     STATE_ON,
 )
+from homeassistant.core import callback
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.event import async_call_later
 
 from OWNd.message import (
     OWNDryContactEvent,
@@ -33,11 +35,13 @@ from .const import (
     CONF_DEVICE_MODEL,
     CONF_DEVICE_CLASS,
     CONF_INVERTED,
+    CONF_CALL_TIMEOUT,
     DOMAIN,
     LOGGER,
 )
 from .myhome_device import MyHOMEEntity
 from .gateway import MyHOMEGatewayHandler
+from .video_door_entry import RING_EVENTS, SESSION_END_EVENTS
 
 SCAN_INTERVAL = timedelta(seconds=5)
 PIR_SENSITIVITY = ["low", "medium", "high", "very high"]
@@ -83,6 +87,20 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 gateway=hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_ENTITY],
             )
             _binary_sensors.append(_binary_sensor)
+        elif _who == 8:
+            _binary_sensor = MyHOMEVideoDoorEntryCall(
+                hass=hass,
+                device_id=_binary_sensor,
+                who=_configured_binary_sensors[_binary_sensor][CONF_WHO],
+                where=_configured_binary_sensors[_binary_sensor][CONF_WHERE],
+                name=_configured_binary_sensors[_binary_sensor][CONF_NAME],
+                entity_name=_configured_binary_sensors[_binary_sensor][CONF_ENTITY_NAME],
+                call_timeout=_configured_binary_sensors[_binary_sensor][CONF_CALL_TIMEOUT],
+                manufacturer=_configured_binary_sensors[_binary_sensor][CONF_MANUFACTURER],
+                model=_configured_binary_sensors[_binary_sensor][CONF_DEVICE_MODEL],
+                gateway=hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_ENTITY],
+            )
+            _binary_sensors.append(_binary_sensor)
         elif _who == 1 and _device_class == BinarySensorDeviceClass.MOTION:
             _binary_sensor = MyHOMEMotionSensor(
                 hass=hass,
@@ -108,8 +126,12 @@ async def async_unload_entry(hass, config_entry):
 
     _configured_binary_sensors = hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM]
 
-    for _binary_sensor in _configured_binary_sensors.keys():
+    # Iterated over a copy: deleting out of the dict being walked raises on the
+    # second key. Aligned with button/event/camera, which all iterate a list.
+    for _binary_sensor in list(_configured_binary_sensors):
         del hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM][_binary_sensor]
+
+    return True
 
 
 class MyHOMEDryContact(MyHOMEEntity, BinarySensorEntity):
@@ -334,3 +356,105 @@ class MyHOMEMotionSensor(MyHOMEEntity, BinarySensorEntity, RestoreEntity):
         self._attr_force_update = True
         self.async_write_ha_state()
         self._attr_force_update = False
+
+
+class MyHOMEVideoDoorEntryCall(MyHOMEEntity, BinarySensorEntity):
+    """"Call in progress" for one entrance panel (WHO=8).
+
+    On when the bell rings, off when the bus reports the session ended. The end
+    is not guaranteed to arrive, so a safety timeout (the `call_timeout` option,
+    60 s by default) takes it off if nothing else does. `RUNNING` is the closest
+    device class: a call is a thing that is either running or not.
+
+    `available` is deliberately **not** overridden to follow the gateway
+    connection: only the gateway refreshes that flag, and it does not walk the
+    video-door-entry entities, so an override would freeze on its first value.
+    """
+
+    _attr_device_class = BinarySensorDeviceClass.RUNNING
+    _attr_icon = "mdi:phone-in-talk"
+
+    def __init__(
+        self,
+        hass,
+        name: str,
+        entity_name: str,
+        device_id: str,
+        who: str,
+        where: str,
+        call_timeout: int,
+        manufacturer: str,
+        model: str,
+        gateway: MyHOMEGatewayHandler,
+    ):
+        super().__init__(
+            hass=hass,
+            name=name,
+            platform=PLATFORM,
+            device_id=device_id,
+            who=who,
+            where=where,
+            manufacturer=manufacturer,
+            model=model,
+            gateway=gateway,
+        )
+        self._attr_name = entity_name if entity_name else "Call in progress"
+        self._attr_unique_id = f"{gateway.mac}-{self._device_id}-call"
+        self._timeout = call_timeout
+        self._cancel_timeout = None
+        self._attr_is_on = False
+
+    async def async_added_to_hass(self):
+        """When entity is added to hass."""
+        self._hass.data[DOMAIN][self._gateway_handler.mac][CONF_PLATFORMS][self._platform][self._device_id][CONF_ENTITIES]["call"] = self
+
+    async def async_will_remove_from_hass(self):
+        """When entity is removed from hass."""
+        self._clear_timeout()
+        _entities = self._hass.data[DOMAIN][self._gateway_handler.mac][CONF_PLATFORMS][self._platform][self._device_id][CONF_ENTITIES]
+        if "call" in _entities:
+            del _entities["call"]
+
+    async def async_update(self):
+        """The panel cannot be polled: the state is pushed by the gateway."""
+
+    def _clear_timeout(self) -> None:
+        if self._cancel_timeout is not None:
+            self._cancel_timeout()
+            self._cancel_timeout = None
+
+    @callback
+    def _call_timed_out(self, _now) -> None:
+        """Safety net: no end frame arrived, so drop the call after the timeout.
+
+        `async_call_later` hands the callback the current time; the argument is
+        taken and ignored. `@callback` keeps it on the event loop — a bare sync
+        target is run in an executor thread, where `async_write_ha_state` is
+        illegal.
+        """
+        self._cancel_timeout = None
+        if self._attr_is_on:
+            self._attr_is_on = False
+            self.async_write_ha_state()
+
+    def handle_event(self, message) -> None:
+        """On on a ring, off on the session end; the timeout guards the gap."""
+        if isinstance(message, RING_EVENTS):
+            LOGGER.info("%s Call started: %s", self._gateway_handler.log_id, message)
+            # A re-ring while already on restarts the timeout rather than stacking.
+            self._clear_timeout()
+            self._cancel_timeout = async_call_later(self._hass, self._timeout, self._call_timed_out)
+            self._attr_is_on = True
+            self.async_write_ha_state()
+        elif isinstance(message, SESSION_END_EVENTS):
+            # Only a call end (`*8*3#1#…`, kind 1) takes the sensor off. A view
+            # end (`*8*3#5#…`, kind 5) is the close of an auto-on — someone
+            # watched the camera — and would otherwise drop a call that is still
+            # in progress. The safety timeout still guards a call end that never
+            # arrives.
+            if message.kind != 1:
+                return
+            LOGGER.info("%s Call ended: %s", self._gateway_handler.log_id, message)
+            self._clear_timeout()
+            self._attr_is_on = False
+            self.async_write_ha_state()

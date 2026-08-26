@@ -84,7 +84,7 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.hass = hass
         self.is_connected = True
         self.generate_events = False
-        self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.1.17")
+        self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.0.10")
         # Cancelled by `listening_loop` on its way out.
         self.listening_worker = types.SimpleNamespace(cancel=lambda: None)
         self.sent = []
