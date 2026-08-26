@@ -320,10 +320,11 @@ What comes out of *this* amplifier is a different matter: `media_title`,
   for their state again, since the bus went on living without us.
 - **Frames of systems this fork does not support are ignored quietly.** Video
   door entry (WHO 6 and 7) and door entry (WHO 8) are modelled by neither OWNd
-  0.7.48 nor this integration, so their frames — `*6*10*4000##`, `*8*19*20##` —
-  reach the listener as raw text. They are logged at debug level as *Ignoring
-  unsupported WHO*, rather than warned about once per call. A WHO nobody
-  expected still warns.
+  0.7.48 nor this integration: `OWNEvent.parse` has no branch for them and hands
+  the frame back as raw text, exactly as it does for WHO=22. `*6*10*4000##` and
+  `*8*19*20##` were both seen on this bus. They are logged at debug level as
+  *Ignoring unsupported WHO*, rather than warned about once per call or per
+  press. A WHO nobody expected still warns.
 - **OWNd cannot parse a time write without a timezone** (WHO=13), which a
   gateway sends on its own: its parser raises an `IndexError`, `get_next`
   answers nothing and logs *Event session crashed.* with a traceback. The

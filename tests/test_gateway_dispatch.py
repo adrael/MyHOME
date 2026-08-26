@@ -128,6 +128,9 @@ class Installation:
         }
 
         self.handler = FakeGateway(self)
+        # What `__init__.py` stores before it forwards the platforms, and what
+        # every `async_setup_entry` reads to reach the gateway.
+        self.data[DOMAIN][MAC][const.CONF_ENTITY] = self.handler
         self.devices = self.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"]
         self.entities = {}
 
@@ -1769,6 +1772,54 @@ def test_the_station_select_belongs_to_the_tuner_device(installation):
     assert _station._attr_unique_id == f"{MAC}-22-2#1-station"
     assert _station._attr_icon == "mdi:playlist-music"
     assert _station._attr_should_poll is False
+
+
+def test_the_select_platform_sets_up_the_tuner_of_the_gateway(installation):
+    """The path Home Assistant takes: forward the platform, get the entities.
+
+    Nothing else exercises `select.async_setup_entry` — the fixture builds its
+    entities by hand — and a wrong keyword there is a `TypeError` at startup.
+    """
+    _added = []
+
+    asyncio.run(select.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert [_entity._attr_unique_id for _entity in _added] == [f"{MAC}-22-2#1-station"]
+    assert [_entity._attr_device_info["name"] for _entity in _added] == ["Tuner FM"]
+
+
+def test_the_select_platform_sets_up_one_entity_per_source():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    _added = []
+
+    asyncio.run(select.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert sorted(_entity._attr_unique_id for _entity in _added) == [f"{MAC}-22-2#1-station", f"{MAC}-22-2#2-station"]
+
+
+def test_the_select_platform_of_a_gateway_without_a_tuner_adds_nothing(installation):
+    del installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["select"]
+    _added = []
+
+    asyncio.run(select.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert _added == []
+
+
+def test_the_select_platform_forgets_its_devices_on_unload(installation):
+    asyncio.run(select.async_unload_entry(installation, types.SimpleNamespace(data={"mac": MAC})))
+
+    assert installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["select"] == {}
+    # The tuner is a device dict per platform: the number keeps its own.
+    assert installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["number"] != {}
+
+
+def test_the_number_platform_sets_up_the_tuner_of_the_gateway(installation):
+    _added = []
+
+    asyncio.run(number.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert [_entity._attr_unique_id for _entity in _added] == [f"{MAC}-22-2#1-frequency"]
 
 
 def test_the_station_options_are_the_source_list_of_the_amplifiers(installation):
