@@ -97,6 +97,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
 
 async def async_unload_entry(hass, config_entry):
+    """Forget the button devices of this gateway.
+
+    Home Assistant never calls this: unloading a config entry resets the entity
+    platform, which removes the entities one by one through
+    `async_will_remove_from_hass` and never looks for a module level
+    `async_unload_entry` — only `__init__.py` has one that is called. Kept
+    because every platform of this integration carries the same hook.
+    """
     if PLATFORM not in hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS]:
         return True
 
@@ -105,8 +113,7 @@ async def async_unload_entry(hass, config_entry):
     ][PLATFORM]
 
     # Iterated over a copy: the loop is deleting out of the dict it walks, which
-    # raises on the second key. Nothing reached this before the tuner had the
-    # `button` platform forwarded for `media_player` only installations.
+    # raises on the second key.
     for _button in list(_configured_buttons):
         del hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM][
             _button

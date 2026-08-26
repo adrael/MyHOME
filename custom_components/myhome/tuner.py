@@ -113,9 +113,17 @@ class MyHOMETunerEntity(MyHOMEEntity):
     async def async_added_to_hass(self):
         """When entity is added to hass.
 
-        `MyHOMEEntity` registers itself under the platform name, which would
-        have the five entities of a tuner overwrite one another, and calls
-        `async_update`, which Home Assistant does on its own for a tuner entity.
+        Overridden whole, for two reasons. `MyHOMEEntity` registers itself under
+        the *platform* name, which would have the five entities of a tuner
+        overwrite one another in `hass.data`; and it calls `async_update`, which
+        is left out here — the source is asked for once per gateway, and the
+        amplifiers claim that request when they are added (`CONF_TUNER_REQUESTED`
+        in `media_player.async_update`). A tuner exists only because amplifiers
+        listen to its source, so there is always one to ask.
+
+        Nothing polls these entities either: `MyHOMEEntity` sets
+        `_attr_should_poll = False`, so `async_update` runs on the way in and on
+        `gateway.reconnected()`, and nowhere else.
         """
         self._hass.data[DOMAIN][self._gateway_handler.mac][CONF_PLATFORMS][self._platform][self._device_id][CONF_ENTITIES][self._entity_key] = self
 
