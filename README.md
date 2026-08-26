@@ -362,16 +362,19 @@ grouped by room. Tapping a tile's icon toggles that amplifier, tapping the tile
 opens its more-info dialog, and the slider sets the volume.
 
 The Tuner section is the tuner device and nothing else: what it is playing on
-three attribute rows, `number.tuner_fm_frequency` as a slider
-(the `numeric-input` tile feature, Home Assistant 2024.11+), the four tuner
-buttons, and a "turn every amplifier off" button. None of them touches an
-amplifier, which is the point — one tuner, one place to drive it, no risk of
-sending a station step once per member of a group.
+three attribute rows, `select.tuner_fm_station` as a dropdown (the
+`select-options` tile feature), `number.tuner_fm_frequency` as a slider (the
+`numeric-input` tile feature, Home Assistant 2024.11+), the four tuner buttons,
+and a "turn every amplifier off" button. Only the attribute rows read an
+amplifier, and only to display — every control there addresses the tuner, which
+is the point: one tuner, one place to drive it, no risk of sending a station
+step once per member of a group.
 
-The kitchen tile keeps the station dropdown (`media-player-source`, Home
-Assistant 2026.5+), the one place a station is picked by name. On an older Home
-Assistant, drop that feature and pick the station from the Source menu of any
-amplifier's more-info dialog.
+The kitchen tile keeps the station dropdown of the *amplifier*
+(`media-player-source`, Home Assistant 2026.5+) as well, for the room where one
+usually reaches for it. On an older Home Assistant, drop that feature and use
+`select.tuner_fm_station`, or the Source menu of any amplifier's more-info
+dialog.
 
 Paste the `- title: Radios` item into the `views:` list of your own dashboard
 (raw configuration editor) rather than over the whole file, and adapt the entity
