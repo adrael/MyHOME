@@ -33,6 +33,8 @@ from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.const import CONF_NAME, CONF_MAC
 
+from .sound_diffusion import DEFAULT_TUNING_PRESET, MAX_STATION_PRESET
+
 from .const import (
     CONF_PLATFORMS,
     CONF_WHO,
@@ -45,6 +47,7 @@ from .const import (
     CONF_ZONE,
     CONF_SOURCE,
     CONF_RADIO_STATIONS,
+    CONF_TUNING_PRESET,
     CONF_FAN_SUPPORT,
     CONF_MANUFACTURER,
     CONF_DEVICE_MODEL,
@@ -219,6 +222,12 @@ class BusInterface(object):
         return "BusInterface(%s, msg=%r)" % ("String", self.msg)
 
 
+#: Keys of a gateway that configure the gateway itself rather than a platform.
+#: `tuning_preset` carries a default, so it is present on every gateway, media
+#: player or not: forgetting it here would break installations that have none.
+GATEWAY_OPTIONS = (CONF_RADIO_STATIONS, CONF_TUNING_PRESET)
+
+
 class MyHomeConfigSchema(Schema):
     def __call__(self, data):
         data = super().__call__(data)
@@ -229,10 +238,11 @@ class MyHomeConfigSchema(Schema):
             for platform in data[gateway]:
                 if platform == CONF_MAC:
                     continue
-                if platform == CONF_RADIO_STATIONS:
+                if platform in GATEWAY_OPTIONS:
                     # A gateway wide option, not a platform: `__init__.py` forwards
-                    # every key of CONF_PLATFORMS to `async_forward_entry_setups`.
-                    _rekeyed_data[data[gateway][CONF_MAC]][CONF_RADIO_STATIONS] = data[gateway][platform]
+                    # every key of CONF_PLATFORMS to `async_forward_entry_setups`,
+                    # and would try to set up a platform named after the option.
+                    _rekeyed_data[data[gateway][CONF_MAC]][platform] = data[gateway][platform]
                     continue
                 _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][platform] = data[gateway][platform]
 
@@ -500,6 +510,7 @@ gateway_schema = Schema(
         Optional(CLIMATE): climate_schema,
         Optional(MEDIA_PLAYER): media_player_schema,
         Optional(CONF_RADIO_STATIONS): RadioStations(),
+        Optional(CONF_TUNING_PRESET, default=DEFAULT_TUNING_PRESET): All(Coerce(int), Range(min=1, max=MAX_STATION_PRESET)),
     }
 )
 

@@ -124,7 +124,7 @@ def test_radio_stations_are_stored_beside_the_platforms_not_among_them():
     """A gateway option must not end up looking like a platform to set up."""
     result = validate.config_schema(
         {
-            "villa": {
+            "house": {
                 "mac": MAC,
                 "radio_stations": {"106.0": "SUD RADIO"},
                 "media_player": {"ampli": {"where": "3#7#1", "name": "Radio Cuisine"}},
@@ -139,7 +139,7 @@ def test_radio_stations_are_stored_beside_the_platforms_not_among_them():
 
 def test_radio_stations_are_optional():
     result = validate.config_schema(
-        {"villa": {"mac": MAC, "media_player": {"ampli": {"where": "3#7#1", "name": "Radio Cuisine"}}}}
+        {"house": {"mac": MAC, "media_player": {"ampli": {"where": "3#7#1", "name": "Radio Cuisine"}}}}
     )
     mac = list(result)[0]
     assert const.CONF_RADIO_STATIONS not in result[mac]
@@ -148,6 +148,53 @@ def test_radio_stations_are_optional():
 def test_the_configured_table_feeds_station_name():
     table = validate.RadioStations()({"106.0": "MA RADIO"})
     assert sound_diffusion.station_name(10600, table) == "MA RADIO"
+
+
+# --------------------------------------------------------------------------- #
+# tuning_preset gateway option
+# --------------------------------------------------------------------------- #
+
+
+def _gateway(**options):
+    result = validate.config_schema(
+        {"house": {"mac": MAC, "media_player": {"ampli": {"where": "3#7#1", "name": "Radio Cuisine"}}, **options}}
+    )
+    return result[list(result)[0]]
+
+
+def test_tuning_preset_defaults_to_the_last_preset():
+    assert _gateway()[const.CONF_TUNING_PRESET] == sound_diffusion.DEFAULT_TUNING_PRESET == 15
+
+
+@pytest.mark.parametrize("preset", [1, 7, 15])
+def test_tuning_preset_accepts_the_whole_range(preset):
+    assert _gateway(tuning_preset=preset)[const.CONF_TUNING_PRESET] == preset
+
+
+def test_tuning_preset_is_coerced_from_a_string():
+    assert _gateway(tuning_preset="12")[const.CONF_TUNING_PRESET] == 12
+
+
+@pytest.mark.parametrize("preset", [0, -1, 16, 99])
+def test_tuning_preset_rejects_what_the_tuner_has_no_slot_for(preset):
+    with pytest.raises(Invalid):
+        _gateway(tuning_preset=preset)
+
+
+def test_tuning_preset_is_stored_beside_the_platforms_not_among_them():
+    """It carries a default, so it reaches every gateway, amplifiers or not."""
+    result = _gateway(tuning_preset=3)
+
+    assert const.CONF_TUNING_PRESET not in result[const.CONF_PLATFORMS]
+    assert list(result[const.CONF_PLATFORMS]) == ["media_player"]
+
+
+def test_a_gateway_without_amplifiers_gets_no_extra_platform():
+    result = validate.config_schema({"house": {"mac": MAC, "light": {"lamp": {"where": "12", "name": "Lamp"}}}})
+    mac = list(result)[0]
+
+    assert const.CONF_TUNING_PRESET not in result[mac][const.CONF_PLATFORMS]
+    assert result[mac][const.CONF_TUNING_PRESET] == 15
 # --------------------------------------------------------------------------- #
 # The examples of the README have to validate
 # --------------------------------------------------------------------------- #
