@@ -28,6 +28,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
+from homeassistant.components.number import DOMAIN as NUMBER
 
 from OWNd.connection import OWNSession, OWNEventSession, OWNCommandSession, OWNGateway
 from OWNd.message import (
@@ -63,6 +64,7 @@ from .const import (
     CONF_SOUND_SOURCES,
     CONF_TUNER_REQUESTED,
     CONF_WHERE,
+    CONF_WHO,
     DOMAIN,
     LOGGER,
 )
@@ -447,17 +449,37 @@ class MyHOMEGatewayHandler:
         LOGGER.debug("%s Destroying listening worker.", self.log_id)
         self.listening_worker.cancel()
 
-    def _amplifier_entities(self):
-        """Every `media_player` entity of this gateway that hass already knows.
+    def _tuner_devices(self, platform: str):
+        """Every device of `platform` that is a sound diffusion tuner.
 
-        Only that platform is walked: `available` of the other platforms does
-        not follow the connection, and writing them would change their
-        behaviour.
+        `validate.py` derives one per source under both `number` and `button`,
+        and the `button` platform also holds the lock buttons of the lights,
+        switches and covers — which have nothing to do with WHO=22.
         """
         _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
         if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
             return
-        for _device in _gateway_data[CONF_PLATFORMS].get(MEDIA_PLAYER, {}).values():
+        for _device in _gateway_data[CONF_PLATFORMS].get(platform, {}).values():
+            if _device.get(CONF_WHO) == "22":
+                yield _device
+
+    def _sound_entities(self):
+        """Every sound diffusion entity of this gateway that hass already knows.
+
+        The amplifiers of the `media_player` platform and the entities of the
+        tuner devices, spread over `number` and `button`. Those platforms are
+        walked and no other: `available` elsewhere does not follow the
+        connection, and writing those entities would change their behaviour.
+
+        The amplifiers come first, so that the one status request a source is
+        worth is claimed by an amplifier when a gateway has both.
+        """
+        _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
+        if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
+            return
+        _devices = list(_gateway_data[CONF_PLATFORMS].get(MEDIA_PLAYER, {}).values())
+        _devices += list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(BUTTON))
+        for _device in _devices:
             for _entity in _device[CONF_ENTITIES].values():
                 # `hass` is set when the entity is added to a platform; writing
                 # a state before that raises.
@@ -465,16 +487,16 @@ class MyHOMEGatewayHandler:
                     yield _entity
 
     def _set_connected(self, is_connected: bool) -> None:
-        """Record the connection state and refresh the amplifiers.
+        """Record the connection state and refresh the sound diffusion entities.
 
-        An amplifier's `available` is this very flag, and no other code path
-        writes those entities when the gateway comes and goes.
+        Their `available` is this very flag, and no other code path writes them
+        when the gateway comes and goes.
         """
         if self.is_connected == is_connected:
             return
 
         self.is_connected = is_connected
-        for _entity in self._amplifier_entities():
+        for _entity in self._sound_entities():
             _entity.async_write_ha_state()
 
     async def reconnected(self) -> None:
@@ -495,12 +517,12 @@ class MyHOMEGatewayHandler:
             _source.pop(CONF_TUNER_REQUESTED, None)
 
         try:
-            for _entity in self._amplifier_entities():
+            for _entity in self._sound_entities():
                 await _entity.async_update()
         except Exception:  # pylint: disable=broad-except
             # Called from the listening loop, which must not die of it: the
             # amplifiers are asked again on the next reconnection either way.
-            LOGGER.exception("%s Could not refresh the amplifiers.", self.log_id)
+            LOGGER.exception("%s Could not refresh the sound diffusion entities.", self.log_id)
 
     def handle_sound_diffusion(self, raw_message: str) -> None:
         """Dispatch a WHO=22 frame to the relevant media_player entities."""
@@ -545,7 +567,8 @@ class MyHOMEGatewayHandler:
             # Handed to every amplifier: which source one listens to is the
             # configured one until a WHAT 35 command moves it, and only the
             # entity knows that. It drops the events of the other sources.
-            _devices = list(_configured_amplifiers.values())
+            # The tuner devices read the store too, and drop them the same way.
+            _devices = list(_configured_amplifiers.values()) + list(self._tuner_devices(NUMBER))
         elif isinstance(_event, BROADCAST_EVENTS):
             # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
             _devices = [_device for _device in _configured_amplifiers.values() if int(_device[CONF_WHERE].split("#")[1]) == _event.area]
@@ -563,11 +586,42 @@ class MyHOMEGatewayHandler:
                 if isinstance(_device[CONF_ENTITIES][_entity], MyHOMEEntity):
                     _device[CONF_ENTITIES][_entity].handle_event(_event)
 
+    def refresh_sound_source(self, event) -> None:
+        """Record a tuning the integration just commanded, and show it at once.
+
+        The bus echoes a retuning about 250 ms later; recording it now is what
+        makes a station change feel immediate. Since the store then already holds
+        it, `update_sound_source` finds nothing new in the echo and the
+        amplifiers are written once, not twice.
+
+        Every sound diffusion entity of the gateway is handed the event — the
+        amplifiers and the tuner devices — as `handle_event` alone knows which
+        source its entity is listening to. The seek buttons come through here
+        too, to drop a preset the scan they are about to send leaves behind.
+        """
+        if not self.update_sound_source(event):
+            return
+        for _entity in self._sound_entities():
+            _entity.handle_event(event)
+
     def update_sound_source(self, event) -> bool:
         """Record a source's tuning; answer whether it moved.
 
         Read back by every amplifier listening to that source, which is why an
         unchanged reading is worth nothing to them.
+
+        A dimension 5 landing on another frequency is **not** read as leaving
+        the preset behind, though a scan does exactly that. A preset step is
+        answered by a burst — dimension 5 with the new frequency, then dimension
+        11 with the slot about 20 ms later — so dropping the preset on the 5 had
+        every station change blink the number away and back. The preset is
+        dropped where the scan is known to have happened instead: the two seek
+        buttons clear it themselves before sending (`tuner.MyHOMETunerButton`).
+
+        What is left of it: a seek pressed at a wall control is invisible to us
+        until the tuner reports a slot again, and the preset shown until then is
+        the one it started from. A dimension 11 or a dimension 6 puts the right
+        one back — a scan downwards falling onto a preset emits one at once.
         """
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
         _before = dict(_source)

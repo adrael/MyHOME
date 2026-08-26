@@ -31,6 +31,7 @@ _PLATFORMS = [
     "sensor",
     "climate",
     "media_player",
+    "number",
 ]
 
 
@@ -68,6 +69,11 @@ class MediaPlayerEntity(Entity):
 
     _attr_state = None
     _attr_volume_level = None
+    _attr_supported_features = 0
+
+    @property
+    def supported_features(self):
+        return self._attr_supported_features
 
     @property
     def state(self):
@@ -76,6 +82,46 @@ class MediaPlayerEntity(Entity):
     @property
     def volume_level(self):
         return self._attr_volume_level
+
+
+class NumberEntity(Entity):
+    """Stand-in exposing the `_attr_*` fallbacks the real class provides."""
+
+    _attr_native_value = None
+    _attr_native_min_value = 0.0
+    _attr_native_max_value = 100.0
+    _attr_native_step = 1.0
+    _attr_native_unit_of_measurement = None
+    _attr_mode = "auto"
+    _attr_device_class = None
+
+    @property
+    def native_value(self):
+        return self._attr_native_value
+
+    @property
+    def native_min_value(self):
+        return self._attr_native_min_value
+
+    @property
+    def native_max_value(self):
+        return self._attr_native_max_value
+
+    @property
+    def native_step(self):
+        return self._attr_native_step
+
+    @property
+    def native_unit_of_measurement(self):
+        return self._attr_native_unit_of_measurement
+
+    @property
+    def mode(self):
+        return self._attr_mode
+
+    @property
+    def device_class(self):
+        return self._attr_device_class
 
 
 class _StringEnumMeta(type):
@@ -158,6 +204,19 @@ class MediaPlayerEntityFeature:
     VOLUME_STEP = 1024
     NEXT_TRACK = 32
     PREVIOUS_TRACK = 16
+    SELECT_SOURCE = 2048
+
+
+class NumberMode(metaclass=_StringEnumMeta):
+    _members = ("AUTO", "BOX", "SLIDER")
+
+
+class HomeAssistantError(Exception):
+    """Stand-in for `homeassistant.exceptions.HomeAssistantError`."""
+
+
+class ServiceValidationError(HomeAssistantError):
+    """Stand-in for `homeassistant.exceptions.ServiceValidationError`."""
 
 
 class EntityCategory(metaclass=_StringEnumMeta):
@@ -179,6 +238,11 @@ def install():
 
     _module("homeassistant")
     _module("homeassistant.core", HomeAssistant=object)
+    _module(
+        "homeassistant.exceptions",
+        HomeAssistantError=HomeAssistantError,
+        ServiceValidationError=ServiceValidationError,
+    )
     _module("homeassistant.helpers")
     _module("homeassistant.helpers.entity", Entity=Entity)
     _module(
@@ -210,6 +274,9 @@ def install():
     _media_player.MediaPlayerState = MediaPlayerState
     _media_player.MediaType = MediaType
     _media_player.MediaPlayerEntityFeature = MediaPlayerEntityFeature
+    _number = sys.modules["homeassistant.components.number"]
+    _number.NumberEntity = NumberEntity
+    _number.NumberMode = NumberMode
 
 
 def load(name):

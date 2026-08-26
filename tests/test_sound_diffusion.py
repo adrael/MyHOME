@@ -349,6 +349,17 @@ def test_set_frequency():
     assert sd.set_frequency(1, 9730, 15, modulation=1) == "*#22*5#2#1*#11*1*9730*15##"
 
 
+def test_set_frequency_takes_a_zero_based_preset():
+    """Verified on hardware 2026-08-26: `*0` is answered with `*11*1*8970*1`."""
+    assert sd.set_frequency(1, 8970, 0) == "*#22*5#2#1*#11*1*8970*0##"
+    assert sd.set_frequency(1, 8970, sd.DEFAULT_TUNING_PRESET - 1) == "*#22*5#2#1*#11*1*8970*14##"
+
+
+def test_the_default_tuning_preset_is_the_last_one():
+    assert sd.MAX_STATION_PRESET == 15
+    assert sd.DEFAULT_TUNING_PRESET == 15
+
+
 def test_requests():
     assert sd.request_amplifier_state(2, 2) == "*#22*3#2#2*12##"
     assert sd.request_amplifier_volume(2, 2) == "*#22*3#2#2*1##"
@@ -431,3 +442,97 @@ def test_stations_table_is_consistent():
     assert len(sd.STATIONS) == 35
     assert all(isinstance(key, int) for key in sd.STATIONS)
     assert sd.STATIONS[10600] == "SUD RADIO"
+
+
+# --------------------------------------------------------------------------- #
+# Station lists
+# --------------------------------------------------------------------------- #
+
+
+def test_station_entries_are_sorted_by_frequency():
+    _entries = sd.station_entries()
+
+    assert len(_entries) == len(sd.STATIONS)
+    assert [_frequency for _frequency, _name, _label in _entries] == sorted(sd.STATIONS)
+    assert _entries[0] == (8770, "MOUV'", "MOUV'")
+
+
+def test_station_entries_label_a_unique_name_with_the_name_alone():
+    assert sd.station_entries({10600: "SUD RADIO"}) == [(10600, "SUD RADIO", "SUD RADIO")]
+
+
+def test_station_entries_suffix_a_name_carried_by_several_frequencies():
+    """Home Assistant tells two sources apart by their label and nothing else."""
+    _entries = sd.station_entries({10600: "RELAIS", 9730: "RELAIS", 8970: "FRANCE INTER"})
+
+    assert _entries == [
+        (8970, "FRANCE INTER", "FRANCE INTER"),
+        (9730, "RELAIS", "RELAIS (97.3)"),
+        (10600, "RELAIS", "RELAIS (106.0)"),
+    ]
+
+
+def test_station_entries_of_an_empty_table():
+    assert sd.station_entries({}) == []
+
+
+def test_station_label_matches_within_the_tolerance():
+    assert sd.station_label(10600) == "SUD RADIO"
+    assert sd.station_label(10605) == "SUD RADIO"
+    assert sd.station_label(10610) is None
+    assert sd.station_label(None) is None
+
+
+def test_station_label_carries_the_suffix_station_name_does_not():
+    _table = {10600: "RELAIS", 9730: "RELAIS"}
+    assert sd.station_name(10600, _table) == "RELAIS"
+    assert sd.station_label(10600, _table) == "RELAIS (106.0)"
+
+
+def test_every_station_label_is_unique():
+    """A duplicate label would make one of the two unreachable from a dashboard."""
+    _labels = [_label for _frequency, _name, _label in sd.station_entries()]
+    assert len(set(_labels)) == len(_labels)
+
+
+def test_tuner_device_id():
+    assert sd.tuner_device_id(1) == "22-2#1"
+    assert sd.tuner_device_id(4) == "22-2#4"
+
+
+def test_the_fm_band_is_the_one_the_number_entity_offers():
+    assert sd.MIN_FREQUENCY == 8750
+    assert sd.MAX_FREQUENCY == 10800
+    assert sd.FREQUENCY_STEP == 5
+    # Every station of the built-in table sits inside the band and on its raster.
+    for _frequency in sd.STATIONS:
+        assert sd.MIN_FREQUENCY <= _frequency <= sd.MAX_FREQUENCY
+        assert _frequency % sd.FREQUENCY_STEP == 0
+
+
+def test_the_band_holds_the_frequencies_the_hardware_session_reached():
+    """87.7 to 107.3 were driven on the bus on 2026-08-26."""
+    assert sd.MIN_FREQUENCY <= 8770
+    assert sd.MAX_FREQUENCY >= 10730
+
+
+def test_the_four_tuner_button_frames_are_the_ones_own_d_flags_invalid():
+    """They end on an empty WHAT parameter, so `myhome.send_message` refuses them.
+
+    The README says so; this is what makes the claim true. `gateway.send`, which
+    is what the buttons use, does not look at the flag.
+    """
+    from OWNd.message import OWNCommand
+
+    for _frame in (
+        sd.frequency_seek_up(1),
+        sd.frequency_seek_down(1),
+        sd.station_next(1),
+        sd.station_previous(1),
+    ):
+        _command = OWNCommand(_frame)
+        assert str(_command) == _frame
+        assert _command.is_valid is False
+
+    # Writing dimension 11 carries no empty parameter, and is accepted.
+    assert OWNCommand(sd.set_frequency(1, 10110, 14)).is_valid is True

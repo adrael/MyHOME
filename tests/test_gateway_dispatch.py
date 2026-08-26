@@ -21,6 +21,8 @@ sound_diffusion = ha_stubs.load("sound_diffusion")
 validate = ha_stubs.load("validate")
 gateway = ha_stubs.load("gateway")
 media_player = ha_stubs.load("media_player")
+number = ha_stubs.load("number")
+tuner = ha_stubs.load("tuner")
 
 DOMAIN = const.DOMAIN
 MAC = "00:03:50:11:22:33"
@@ -32,13 +34,13 @@ AMPLIFIERS = [
     (7, 1, "Radio Cuisine"),
     (2, 1, "Radio Suite"),
     (2, 2, "Radio Suite SDB"),
-    (3, 1, "Radio Bureau Julie"),
-    (3, 2, "Radio Bureau Julie SDB"),
+    (3, 1, "Radio Office 1"),
+    (3, 2, "Radio Office 1 Bathroom"),
     (4, 1, "Radio Gym"),
     (5, 1, "Radio Chambre Ami"),
     (5, 2, "Radio Chambre Ami SDB"),
-    (6, 1, "Radio Bureau Raph"),
-    (6, 2, "Radio Bureau Raph SDB"),
+    (6, 1, "Radio Office 2"),
+    (6, 2, "Radio Office 2 Bathroom"),
     (1, 1, "Radio Tablette"),
 ]
 
@@ -96,9 +98,9 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.status_requests.append(str(message))
 
 
-def configuration_file(amplifiers=None, source=1, radio_stations=None) -> str:
+def configuration_file(amplifiers=None, source=1, radio_stations=None, tuning_preset=None) -> str:
     """The `myhome.yaml` such an installation would hold."""
-    _lines = ["villa:", f'  mac: "{MAC}"', "  media_player:"]
+    _lines = ["house:", f'  mac: "{MAC}"', "  media_player:"]
     for _area, _point, _name in amplifiers if amplifiers is not None else AMPLIFIERS:
         _source = source(_area, _point) if callable(source) else source
         _lines.append(f'    ampli_{_area}_{_point}: {{ where: "3#{_area}#{_point}", name: "{_name}", source: {_source} }}')
@@ -106,6 +108,8 @@ def configuration_file(amplifiers=None, source=1, radio_stations=None) -> str:
         _lines.append("  radio_stations:" + (" {}" if not radio_stations else ""))
         for _frequency, _name in radio_stations.items():
             _lines.append(f'    "{_frequency}": "{_name}"')
+    if tuning_preset is not None:
+        _lines.append(f"  tuning_preset: {tuning_preset}")
     return "\n".join(_lines) + "\n"
 
 
@@ -116,8 +120,10 @@ class Installation:
     tests cannot drift away from what the integration is actually handed.
     """
 
-    def __init__(self, amplifiers=AMPLIFIERS, source=1, radio_stations=None):
-        self.data = {DOMAIN: validate.config_schema(yaml.safe_load(configuration_file(amplifiers, source, radio_stations)))}
+    def __init__(self, amplifiers=AMPLIFIERS, source=1, radio_stations=None, tuning_preset=None):
+        self.data = {
+            DOMAIN: validate.config_schema(yaml.safe_load(configuration_file(amplifiers, source, radio_stations, tuning_preset)))
+        }
 
         self.handler = FakeGateway(self)
         self.devices = self.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"]
@@ -142,6 +148,41 @@ class Installation:
             _entity.hass = self
             _device[const.CONF_ENTITIES]["media_player"] = _entity
             self.entities[_device_id] = _entity
+
+        # The tuner devices `validate.py` derived out of those amplifiers, kept
+        # apart from `self.entities`: the assertions walking that one are about
+        # the amplifiers.
+        self.tuner_entities = {}
+        _platforms = self.data[DOMAIN][MAC][const.CONF_PLATFORMS]
+        for _device_id, _device in _platforms.get("number", {}).items():
+            self._add_tuner_entity(
+                _device,
+                number.MyHOMETunerFrequency(
+                    hass=self,
+                    device_id=_device_id,
+                    who=_device[const.CONF_WHO],
+                    where=_device[const.CONF_WHERE],
+                    name=_device["name"],
+                    source=_device[const.CONF_SOURCE],
+                    manufacturer=_device[const.CONF_MANUFACTURER],
+                    model=_device[const.CONF_DEVICE_MODEL],
+                    gateway=self.handler,
+                ),
+            )
+        for _device_id, _device in _platforms.get("button", {}).items():
+            if _device[const.CONF_WHO] != "22":
+                continue
+            for _button in tuner.tuner_buttons(hass=self, device_id=_device_id, device=_device, gateway=self.handler):
+                self._add_tuner_entity(_device, _button)
+
+    def _add_tuner_entity(self, device, entity):
+        """What `async_added_to_hass` does for a tuner entity."""
+        entity.hass = self
+        device[const.CONF_ENTITIES][entity._entity_key] = entity
+        self.tuner_entities[f"{entity._device_id}-{entity._entity_key}"] = entity
+
+    def tuner_entity(self, key, source=1):
+        return self.tuner_entities[f"{sound_diffusion.tuner_device_id(source)}-{key}"]
 
     def replay(self, frames):
         for _frame in frames:
@@ -821,3 +862,666 @@ def test_a_source_event_that_feeds_nothing_is_not_dispatched(installation):
 
     assert all(_entity.written_states == 0 for _entity in installation.entities.values())
     assert installation.entity(2, 2).state == PLAYING
+
+
+# --------------------------------------------------------------------------- #
+# Selecting a station
+# --------------------------------------------------------------------------- #
+
+
+def test_the_source_list_is_the_station_table_sorted_by_frequency(installation):
+    _entity = installation.entity(7, 1)
+
+    assert _entity.source_list == [_name for _frequency, _name in sorted(sound_diffusion.STATIONS.items())]
+    assert _entity.source_list[:2] == ["MOUV'", "RADIO CAMPUS"]
+
+
+def test_the_source_list_follows_the_gateway_station_table():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={"106.0": "MA RADIO", "97.3": "AUTRE"})
+    assert installation.entity(2, 2).source_list == ["AUTRE", "MA RADIO"]
+
+
+def test_an_empty_station_table_leaves_the_built_in_source_list():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={})
+    assert len(installation.entity(2, 2).source_list) == len(sound_diffusion.STATIONS)
+
+
+def test_selecting_a_station_writes_the_scratch_preset(installation):
+    """The frame's preset is 0-based, so the last preset, 15, is written as 14."""
+    _entity = installation.entity(7, 1)
+
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*8970*14##"]
+
+
+def test_selecting_a_station_uses_the_tuning_preset_of_the_gateway():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], tuning_preset=3)
+
+    asyncio.run(installation.entity(2, 2).async_select_source("FRANCE INTER"))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*8970*2##"]
+    assert installation.entity(2, 2).extra_state_attributes["preset"] == 3
+
+
+def test_selecting_a_station_addresses_the_source_the_amplifier_listens_to():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=2)
+
+    asyncio.run(installation.entity(2, 2).async_select_source("NOSTALGIE"))
+
+    assert installation.handler.sent == ["*#22*5#2#2*#11*1*9730*14##"]
+
+
+def test_selecting_a_station_is_reflected_before_the_bus_answers(installation):
+    _entity = installation.entity(7, 1)
+    _entity.handle_event(sound_diffusion.AmplifierState(area=7, point=1, is_on=True, mmtype=4))
+    _entity.written_states = 0
+
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+
+    assert _entity.written_states == 1
+    assert installation.tuner[1] == {"modulation": 1, "frequency": 8970, "station": 15}
+    assert _entity.media_title == "89.7 MHz \u00b7 FRANCE INTER"
+    assert _entity.source == "FRANCE INTER"
+
+
+def test_the_echo_of_a_selection_says_nothing_new(installation):
+    """The optimistic refresh records the 1-based preset the bus will echo."""
+    _entity = installation.entity(7, 1)
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+    _written = _entity.written_states
+
+    installation.replay(["*#22*5#2#1*5*1*8970##", "*#22*5#2#1*11*1*8970*15##"])
+
+    assert _entity.written_states == _written
+
+
+def test_selecting_a_station_refreshes_every_amplifier_on_that_source():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.entity(2, 2).async_select_source("FRANCE INTER"))
+
+    assert installation.entity(2, 1).written_states == 1
+    assert installation.entity(2, 2).written_states == 1
+    assert installation.entity(7, 1).written_states == 0
+
+
+def test_selecting_a_station_does_not_turn_the_amplifier_on(installation):
+    """The tuner is shared: changing station says nothing about who listens."""
+    _entity = installation.entity(7, 1)
+
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+
+    assert _entity.state is None
+    # The tuner moved, so `source` follows it; the amplifier did not.
+    assert _entity.source == "FRANCE INTER"
+    assert _entity.media_channel is None
+    assert _entity.extra_state_attributes["frequency_mhz"] == 89.7
+
+
+def test_source_reflects_the_station_the_shared_tuner_is_on(installation):
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
+    assert installation.entity(2, 2).source == "SUD RADIO"
+
+    installation.replay(["*#22*5#2#1*11*1*10110*14##"])
+    assert installation.entity(2, 2).source is None, "101.1 MHz is not in the station table"
+
+
+def test_source_is_scoped_to_the_tuner_not_to_the_amplifier(installation):
+    """Every amplifier names the station, playing it or not — `media_channel` does not.
+
+    A dashboard showing the station dropdown of an amplifier that is off must
+    show the station selected in it, or the control looks broken.
+    """
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+
+    _off = installation.entity(2, 1)
+    assert _off.state is None
+    assert _off.source == "SUD RADIO"
+    assert _off.media_channel is None
+    assert _off.media_title is None
+
+    installation.replay(["*#22*3#2#1*12*0*10##"])
+    assert _off.state == OFF
+    assert _off.source == "SUD RADIO"
+
+
+def test_source_carries_the_disambiguating_suffix_of_the_source_list():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={"106.0": "RELAIS", "97.3": "RELAIS"})
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
+    _entity = installation.entity(2, 2)
+
+    assert _entity.source_list == ["RELAIS (97.3)", "RELAIS (106.0)"]
+    assert _entity.source == "RELAIS (106.0)"
+    assert _entity.source in _entity.source_list
+
+    asyncio.run(_entity.async_select_source("RELAIS (97.3)"))
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*9730*14##"]
+
+
+def test_selecting_a_station_the_table_does_not_carry_is_refused(installation):
+    _entity = installation.entity(7, 1)
+
+    with pytest.raises(ha_stubs.ServiceValidationError):
+        asyncio.run(_entity.async_select_source("RADIO NOWHERE"))
+
+    assert installation.handler.sent == []
+    assert installation.tuner[1] == {}
+
+
+def test_selecting_a_station_supports_source_selection(installation):
+    assert installation.entity(7, 1).supported_features & ha_stubs.MediaPlayerEntityFeature.SELECT_SOURCE
+
+
+# --------------------------------------------------------------------------- #
+# A preset the tuner left behind
+# --------------------------------------------------------------------------- #
+
+#: Hardware session of 2026-08-26, `hwtest-write-presets.log`, sequence S1:
+#: an automatic scan upwards answers with dimension 5 and nothing else.
+SCAN_UP = ["*#22*5#2#1*5*1*10730##"]
+
+#: Same log, sequence S2: a scan downwards falls back onto preset 15 and says so.
+SCAN_DOWN = [
+    "*#22*5#2#1*5*1*10680##",
+    "*#22*5#2#1*11*1*10680*15##",
+    "*#22*5#2#1*5*1*10680##",
+    "*#22*5#2#1*11*1*10680*15##",
+]
+
+
+def preset_step(frequency: int, station: int) -> list:
+    """The two frames a preset step answers with, in the order the bus sends them.
+
+    Dimension 5 with the frequency it landed on and, about 20 ms later,
+    dimension 11 with the same frequency and the slot number. The frequencies
+    below are taken from the built-in station table rather than from a
+    transcript; the *shape* is what these tests are about.
+    """
+    return [
+        f"*#22*5#2#1*5*1*{frequency}##",
+        f"*#22*5#2#1*11*1*{frequency}*{station}##",
+    ]
+
+
+#: The fifteen slots of the tuner, stepped through one **next preset** at a time.
+PRESETS = [
+    (8770, 1),
+    (8850, 2),
+    (8970, 3),
+    (9130, 4),
+    (9220, 5),
+    (9350, 6),
+    (9430, 7),
+    (9530, 8),
+    (9670, 9),
+    (9730, 10),
+    (9820, 11),
+    (9960, 12),
+    (10080, 13),
+    (10240, 14),
+    (10420, 15),
+]
+
+
+def presets_seen(installation, frames, source=1) -> list:
+    """Replay `frames` one at a time, reading the preset back after each.
+
+    A preset that blinks — a value, then `None`, then a value again — is what a
+    dashboard shows as a row going blank, and it is only visible between two
+    frames of the same burst.
+    """
+    _seen = []
+    for _frame in frames:
+        installation.replay([_frame])
+        _seen.append(installation.tuner[source].get("station"))
+    return _seen
+
+
+def test_a_scan_up_commanded_here_drops_the_preset_before_the_bus_answers(installation):
+    """S1: the tuner jumps and never says which slot it is on now, so we drop it."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    assert installation.tuner[1]["station"] == 15
+
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+
+    assert installation.tuner[1]["station"] is None
+    assert installation.handler.sent == ["*22*5#*2#1##"]
+
+    installation.replay(SCAN_UP)
+
+    assert installation.tuner[1]["frequency"] == 10730
+    assert installation.tuner[1]["station"] is None
+
+
+def test_a_scan_down_commanded_here_drops_the_preset_too(installation):
+    """S2: dropped on the press, and put back by the dimension 11 that follows."""
+    installation.replay(["*#22*5#2#1*11*1*10730*3##"])
+
+    asyncio.run(installation.tuner_entity("seek_down").async_press())
+    assert installation.tuner[1]["station"] is None
+
+    installation.replay(SCAN_DOWN)
+
+    assert installation.tuner[1]["frequency"] == 10680
+    assert installation.tuner[1]["station"] == 15
+
+
+def test_a_stale_preset_is_left_out_of_the_attributes(installation):
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10680*15##"])
+    _entity = installation.entity(2, 2)
+    assert _entity.extra_state_attributes["preset"] == 15
+
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+    installation.replay(SCAN_UP)
+
+    assert "preset" not in _entity.extra_state_attributes
+    # The frequency is what the tuner reported, and the station table still
+    # names it: only the slot number is unknown.
+    assert _entity.media_title == "107.3 MHz · BFM BUSINESS"
+    assert _entity.extra_state_attributes["frequency_mhz"] == 107.3
+    assert _entity.extra_state_attributes["station_name"] == "BFM BUSINESS"
+
+
+def test_a_seek_button_writes_the_amplifiers_once(installation):
+    """The optimistic drop is a state change like any other: one write, not two."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values()):
+        _entity.written_states = 0
+
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+    # The tuner's own entities read the same store: the Preset row of the
+    # dashboard is what the drop is early for.
+    assert installation.tuner_entity("frequency").written_states == 1
+
+
+def test_a_seek_button_on_a_tuner_nobody_heard_from_writes_nothing(installation):
+    """Nothing to drop: the store has no preset to blank out."""
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+
+    assert installation.tuner[1].get("station") is None
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+    assert installation.handler.sent == ["*22*5#*2#1##"]
+
+
+def test_a_preset_step_never_blanks_the_preset(installation):
+    """T6: the burst is dimension 5 then dimension 11, and 5 must not blank 11.
+
+    The bus reports the new frequency about 20 ms before it reports the slot.
+    Reading a moved frequency as "the preset is unknown" made every preset step
+    blink the row: a number, nothing, the next number.
+    """
+    installation.replay(["*#22*5#2#1*11*1*10680*14##"])
+
+    asyncio.run(installation.tuner_entity("next_preset").async_press())
+    _seen = presets_seen(installation, preset_step(10730, 15))
+
+    assert None not in _seen
+    assert _seen == [14, 15]
+    assert installation.tuner[1]["frequency"] == 10730
+
+
+def test_stepping_through_the_fifteen_presets_never_blanks_the_preset(installation):
+    """N01..N15: fifteen **next preset** steps in a row, one burst each."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    _seen = []
+
+    for _frequency, _station in PRESETS:
+        asyncio.run(installation.tuner_entity("next_preset").async_press())
+        _seen.extend(presets_seen(installation, preset_step(_frequency, _station)))
+
+    assert None not in _seen
+    assert _seen[1::2] == [_station for _frequency, _station in PRESETS]
+
+
+def test_a_preset_step_writes_each_amplifier_at_most_twice(installation):
+    """One write for the frequency, one for the slot: the burst carries two frames."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+
+    for _frequency, _station in PRESETS:
+        for _entity in installation.entities.values():
+            _entity.written_states = 0
+
+        asyncio.run(installation.tuner_entity("next_preset").async_press())
+        installation.replay(preset_step(_frequency, _station))
+
+        assert all(_entity.written_states <= 2 for _entity in installation.entities.values())
+
+
+def test_a_dimension_5_on_the_frequency_we_hold_keeps_the_preset(installation):
+    """The tuner repeats itself constantly; a reading that moved nothing is not a scan."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.replay(["*#22*5#2#1*5*1*10680##"])
+
+    assert installation.tuner[1]["station"] == 15
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+
+def test_a_scan_at_the_wall_leaves_the_preset_it_left_behind(installation):
+    """The residual of dropping the preset on the press rather than on the frame.
+
+    Nobody tells us a scan happened until the tuner reports a slot again, so a
+    seek done at a wall control shows the slot it started from for as long as it
+    takes the tuner to sit on one — a dimension 6 or a dimension 11.
+    """
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+
+    installation.replay(SCAN_UP)
+
+    assert installation.tuner[1]["frequency"] == 10730
+    assert installation.tuner[1]["station"] == 15
+
+
+def test_a_dimension_6_puts_the_preset_back_on_its_own(installation):
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+    installation.replay(SCAN_UP)
+    assert installation.tuner[1]["station"] is None
+
+    installation.replay(["*#22*2#1*6*3##"])
+
+    assert installation.tuner[1]["station"] == 3
+    assert installation.tuner[1]["frequency"] == 10730
+
+
+def test_the_first_frequency_of_an_unknown_tuner_carries_no_preset(installation):
+    installation.replay(["*#22*5#2#1*5*1*10730##"])
+    assert installation.tuner[1]["frequency"] == 10730
+    assert installation.tuner[1].get("station") is None
+
+
+# --------------------------------------------------------------------------- #
+# The tuner device: one `number` and four `button` entities
+# --------------------------------------------------------------------------- #
+
+
+def test_a_tuner_device_is_derived_for_each_source():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    _platforms = installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]
+
+    assert sorted(_platforms["number"]) == ["22-2#1", "22-2#2"]
+    assert sorted(_device for _device in _platforms["button"] if _platforms["button"][_device][const.CONF_WHO] == "22") == [
+        "22-2#1",
+        "22-2#2",
+    ]
+    assert installation.tuner_entity("frequency", source=2)._source == 2
+
+
+def test_the_only_tuner_of_a_house_is_named_without_a_number(installation):
+    _frequency = installation.tuner_entity("frequency")
+
+    assert _frequency._attr_device_info["name"] == "Tuner FM"
+    assert _frequency._attr_device_info["identifiers"] == {(DOMAIN, f"{MAC}-22-2#1")}
+    assert _frequency._attr_device_info["manufacturer"] == "BTicino S.p.A."
+    assert _frequency._attr_device_info["via_device"] == (DOMAIN, MAC)
+    # `has_entity_name`: "Tuner FM" + "Frequency" gives `number.tuner_fm_frequency`.
+    assert _frequency._attr_has_entity_name is True
+    assert _frequency._attr_name == "Frequency"
+    assert _frequency._attr_unique_id == f"{MAC}-22-2#1-frequency"
+
+
+def test_several_tuners_are_told_apart_by_their_source():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+
+    assert installation.tuner_entity("frequency", source=1)._attr_device_info["name"] == "Tuner FM 1"
+    assert installation.tuner_entity("frequency", source=2)._attr_device_info["name"] == "Tuner FM 2"
+
+
+def test_the_buttons_share_the_device_of_the_number(installation):
+    _frequency = installation.tuner_entity("frequency")
+
+    for _key in ("seek_up", "seek_down", "next_preset", "previous_preset"):
+        _button = installation.tuner_entity(_key)
+        assert _button._attr_device_info["identifiers"] == _frequency._attr_device_info["identifiers"]
+        assert _button._attr_unique_id == f"{MAC}-22-2#1-{_key}"
+
+    assert [installation.tuner_entity(_key)._attr_name for _key, *_ in tuner.TUNER_BUTTONS] == [
+        "Seek up",
+        "Seek down",
+        "Next preset",
+        "Previous preset",
+    ]
+
+
+def test_the_number_describes_the_fm_band(installation):
+    _frequency = installation.tuner_entity("frequency")
+
+    assert _frequency.native_unit_of_measurement == "MHz"
+    assert _frequency.native_min_value == 87.5
+    assert _frequency.native_max_value == 108.0
+    assert _frequency.native_step == 0.05
+    assert _frequency.mode == ha_stubs.NumberMode.AUTO
+    assert _frequency.device_class is None
+    assert _frequency._attr_icon == "mdi:sine-wave"
+    assert _frequency._attr_should_poll is False
+
+
+def test_the_number_reads_the_shared_tuner(installation):
+    _frequency = installation.tuner_entity("frequency")
+    assert _frequency.native_value is None
+
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _frequency.native_value == 106.0
+
+    installation.replay(["*#22*5#2#1*5*1*10245##"])
+    assert _frequency.native_value == 102.45
+
+
+def test_the_number_follows_the_tuner_with_every_amplifier_off(installation):
+    """The tuner is a box of its own; no amplifier has to play for it to be tuned."""
+    installation.replay(CAPTURE)
+
+    assert all(_entity.state != PLAYING for _entity in installation.entities.values() if _entity is not installation.entity(2, 2))
+    assert installation.tuner_entity("frequency").native_value == 106.0
+
+
+def test_a_tuner_event_writes_the_number(installation):
+    _frequency = installation.tuner_entity("frequency")
+    _frequency.written_states = 0
+
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _frequency.written_states == 1
+
+    # Nothing moved, so nothing is written.
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _frequency.written_states == 1
+
+
+def test_a_tuner_event_of_another_source_leaves_the_number_alone():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    _first = installation.tuner_entity("frequency", source=1)
+    _second = installation.tuner_entity("frequency", source=2)
+    _first.written_states = 0
+    _second.written_states = 0
+
+    installation.replay(["*#22*5#2#2*11*1*9730*15##"])
+
+    assert _first.written_states == 0
+    assert _second.written_states == 1
+    assert _first.native_value is None
+    assert _second.native_value == 97.3
+
+
+def test_setting_the_number_writes_the_scratch_preset(installation):
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(101.1))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*10110*14##"]
+
+
+def test_setting_the_number_uses_the_tuning_preset_of_the_gateway():
+    installation = Installation(tuning_preset=3)
+
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(101.1))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*10110*2##"]
+
+
+def test_setting_the_number_addresses_its_own_source():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=2)
+
+    asyncio.run(installation.tuner_entity("frequency", source=2).async_set_native_value(89.7))
+
+    assert installation.handler.sent == ["*#22*5#2#2*#11*1*8970*14##"]
+
+
+def test_setting_the_number_is_reflected_before_the_bus_answers(installation):
+    _frequency = installation.tuner_entity("frequency")
+    _frequency.written_states = 0
+
+    asyncio.run(_frequency.async_set_native_value(101.1))
+
+    assert _frequency.native_value == 101.1
+    assert _frequency.written_states == 1
+    # The frame carries preset 14, 0-based; the tuner will report preset 15.
+    assert installation.tuner[1] == {"modulation": 1, "frequency": 10110, "station": 15}
+
+
+def test_the_echo_of_a_number_write_says_nothing_new(installation):
+    _frequency = installation.tuner_entity("frequency")
+    asyncio.run(_frequency.async_set_native_value(101.1))
+    _frequency.written_states = 0
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.replay(["*#22*5#2#1*5*1*10110##", "*#22*5#2#1*11*1*10110*15##"])
+
+    assert _frequency.written_states == 0
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+
+def test_setting_the_number_refreshes_the_amplifiers_too(installation):
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(97.3))
+
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "NOSTALGIE"
+
+
+def test_a_number_rounded_to_the_bus_unit(installation):
+    """The bus counts in hundredths of MHz; 0.05 MHz is its finest step."""
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(102.45))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*10245*14##"]
+    assert installation.tuner_entity("frequency").native_value == 102.45
+
+
+def test_a_number_off_the_step_is_snapped_onto_it(installation):
+    """A value typed into the box is not on the grid: 87.53 MHz is not a channel."""
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(87.53))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*8755*14##"]
+    assert installation.tuner_entity("frequency").native_value == 87.55
+
+
+@pytest.mark.parametrize(
+    ("written", "sent"),
+    [
+        (87.5, 8750),
+        (87.51, 8750),
+        (87.53, 8755),
+        (99.999, 10000),
+        (108.0, 10800),
+    ],
+)
+def test_every_written_frequency_lands_on_the_step(installation, written, sent):
+    asyncio.run(installation.tuner_entity("frequency").async_set_native_value(written))
+
+    assert installation.handler.sent == [f"*#22*5#2#1*#11*1*{sent}*14##"]
+    assert installation.tuner[1]["frequency"] % sound_diffusion.FREQUENCY_STEP == 0
+
+
+@pytest.mark.parametrize(
+    ("key", "frame"),
+    [
+        ("seek_up", "*22*5#*2#1##"),
+        ("seek_down", "*22*6#*2#1##"),
+        ("next_preset", "*22*9#*2#1##"),
+        ("previous_preset", "*22*10#*2#1##"),
+    ],
+)
+def test_the_tuner_buttons_send_the_frame_verified_on_hardware(installation, key, frame):
+    asyncio.run(installation.tuner_entity(key).async_press())
+
+    assert installation.handler.sent == [frame]
+
+
+def test_the_tuner_buttons_address_their_own_source():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=3)
+
+    asyncio.run(installation.tuner_entity("seek_up", source=3).async_press())
+
+    assert installation.handler.sent == ["*22*5#*2#3##"]
+
+
+def test_the_tuner_entities_follow_the_gateway_connection(installation):
+    _entities = list(installation.tuner_entities.values())
+    assert all(_entity.available is True for _entity in _entities)
+
+    installation.handler._set_connected(False)
+
+    assert all(_entity.available is False for _entity in _entities)
+    assert all(_entity.written_states >= 1 for _entity in _entities)
+
+
+def test_the_number_asks_the_tuner_when_no_amplifier_did(installation):
+    asyncio.run(installation.tuner_entity("frequency").async_update())
+
+    assert installation.handler.status_requests == ["*#22*5#2#1*11##"]
+
+
+def test_the_number_does_not_ask_again_after_an_amplifier_did(installation):
+    asyncio.run(installation.entity(7, 1).async_update())
+    _booted = len(installation.handler.status_requests)
+
+    asyncio.run(installation.tuner_entity("frequency").async_update())
+
+    assert installation.handler.status_requests[_booted:] == []
+
+
+def test_a_tuner_button_has_nothing_to_update(installation):
+    asyncio.run(installation.tuner_entity("seek_up").async_update())
+
+    assert installation.handler.status_requests == []
+
+
+def test_a_reconnection_asks_the_tuner_once_for_every_entity_reading_it(installation):
+    installation.handler._set_connected(False)
+
+    asyncio.run(installation.handler.reconnected())
+
+    assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
+
+
+def test_the_registry_prune_rebuilds_the_unique_id_of_every_entity(installation):
+    """`__init__.py` extrapolates unique ids out of `hass.data` when it prunes.
+
+    An entity whose id it cannot rebuild is removed from the registry on every
+    restart, and comes back with a `_2` suffix. The five entities of a tuner
+    device therefore have to sit under keys of their own.
+    """
+    _platforms = installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]
+    _configured = []
+    for _platform in _platforms:
+        for _device in _platforms[_platform]:
+            for _entity_name in _platforms[_platform][_device][const.CONF_ENTITIES]:
+                if _entity_name != _platform:
+                    _configured.append(f"{MAC}-{_device}-{_entity_name}")
+                else:
+                    _configured.append(f"{MAC}-{_device}")
+
+    _live = [_entity._attr_unique_id for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values())]
+
+    assert len(set(_live)) == len(_live), "two entities cannot share a unique id"
+    assert sorted(set(_live)) == sorted(set(_configured))

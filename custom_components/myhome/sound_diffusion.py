@@ -32,6 +32,30 @@ MAX_VOLUME = 31
 #: Multimedia type used by every command issued by this integration (stereo).
 MMTYPE_STEREO = 4
 
+#: Number of frequency presets an FM tuner holds (F500N, verified on hardware:
+#: preset 15 is followed by preset 1).
+MAX_STATION_PRESET = 15
+
+#: Preset :func:`set_frequency` overwrites when the integration tunes to an
+#: arbitrary station. The last one, so the presets a user is likely to reach for
+#: with the station buttons keep their place.
+DEFAULT_TUNING_PRESET = MAX_STATION_PRESET
+
+#: FM band, in hundredths of MHz: the range the `number` entity offers.
+#:
+#: Band II as it is allocated in Europe. The hardware session of 2026-08-26
+#: actually drove the tuner from 87.7 to 107.3, every frequency in between
+#: accepted; the two ends of the band itself were not tried, and the tuner is
+#: the one that decides what it does with them.
+MIN_FREQUENCY = 8750
+MAX_FREQUENCY = 10800
+
+#: Channel spacing offered by the `number` entity, in hundredths of MHz: 50 kHz,
+#: the raster the frequency table itself is written on. Every frequency of the
+#: hardware session sits on 100 kHz, so the half step was not exercised; the
+#: tuner rounds to whatever it can reach and reports it back.
+FREQUENCY_STEP = 5
+
 #: Modulation values carried by dimensions 5 and 11 (Legrand WHO_22 v1.1).
 MODULATION_FM = 1
 MODULATION_AM_LW = 2
@@ -42,7 +66,8 @@ MODULATION_AM_SW = 4
 STATION_MATCH_TOLERANCE = 5
 
 #: FM band around Bordeaux, keyed by frequency in hundredths of MHz.
-#: Mirrors ``STATIONS`` in the villa-marques dashboard configuration.
+#: Override it per gateway with the ``radio_stations`` configuration option
+#: rather than editing this table, which every update overwrites.
 STATIONS = {
     8770: "MOUV'",
     8810: "RADIO CAMPUS",
@@ -94,6 +119,17 @@ def amplifier_device_id(area: int, point: int) -> str:
     which is ``f"{who}-{where}"`` with the WHERE normalised to ``3#<area>#<point>``.
     """
     return f"22-3#{area}#{point}"
+
+
+def tuner_device_id(source: int) -> str:
+    """Key the device of a source (a tuner) is stored under in ``hass.data``.
+
+    Built the same way as :func:`amplifier_device_id`, out of the WHERE of a
+    source: ``2#<source>``. Unlike the amplifiers, no line of the configuration
+    file declares it — `validate.py` derives one per distinct source of the
+    amplifiers that are configured.
+    """
+    return f"22-2#{source}"
 
 
 # --------------------------------------------------------------------------- #
@@ -257,10 +293,15 @@ class SourceFrequencyStation:
 
 @dataclass(frozen=True)
 class SourceStation:
-    """``*#22*5#2#<s>*6*<station>##`` — dimension 6."""
+    """``*#22*5#2#<s>*6*<station>##`` — dimension 6.
+
+    ``station`` is optional because the integration builds one of these with no
+    station at all: a seek button forgets the preset it is leaving, and this is
+    the event that says so. The bus never sends that form.
+    """
 
     source: int
-    station: int
+    station: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -535,14 +576,28 @@ def station_previous_from_amplifier(area: int, point: int) -> str:
 def frequency_seek_up(source: int = 1, step: Optional[int] = None) -> str:
     """Seek up, automatically (``step`` omitted) or by a given frequency step.
 
-    Spec form (§3.1.5), **not verified on hardware**. Without a step the WHAT
-    parameter is empty, as in :func:`station_next`.
+    Spec form (§3.1.5). The automatic form is verified on hardware 2026-08-26:
+    ``*22*5#*2#1##`` moved the tuner to the next station it caught, and answered
+    with ``*#22*5#2#1*5*1*10730##`` — **dimension 5 alone**, no dimension 11 and
+    no dimension 6, so the preset the tuner was on is left behind and nothing on
+    the bus ever says so. That is what ``tuner.MyHOMETunerButton.async_press``
+    drops it for, on the press rather than on the frame: a preset *step* is
+    answered by a dimension 5 too, and reading that one as a scan had every
+    station change blink the preset away and back.
+
+    Passing a ``step`` is untried; without one the WHAT parameter is empty, as in
+    :func:`station_next`, which ``OWNCommand`` flags ``is_valid = False``.
     """
     return f"*22*5#{step if step is not None else ''}*2#{source}##"
 
 
 def frequency_seek_down(source: int = 1, step: Optional[int] = None) -> str:
-    """Seek down. Spec form (§3.1.5), see :func:`frequency_seek_up`."""
+    """Seek down. Spec form (§3.1.5), see :func:`frequency_seek_up`.
+
+    Verified on hardware the same day, and it says more than seeking up does:
+    ``*22*6#*2#1##`` answered with dimension 5 and then, the frequency having
+    fallen back onto a stored preset, ``*#22*5#2#1*11*1*10680*15##``.
+    """
     return f"*22*6#{step if step is not None else ''}*2#{source}##"
 
 
@@ -555,13 +610,24 @@ def store_station(source: int, station: int) -> str:
     return f"*22*33#{station}*2#{source}##"
 
 
-def set_frequency(source: int, frequency: int, station: int, modulation: int = MODULATION_FM) -> str:
-    """Write dimension 11 on a source: modulation, frequency (x100) and preset.
+def set_frequency(source: int, frequency: int, station_index: int, modulation: int = MODULATION_FM) -> str:
+    """Retune a source, storing the frequency in one of its presets.
 
-    Spec form, **not verified on hardware**. Unlike the station commands it has
-    no empty WHAT parameter, so ``myhome.send_message`` does accept it.
+    ``station_index`` is **0-based**, unlike every other station number of this
+    module: the tuner writes the frequency into preset ``station_index + 1``.
+    Verified on hardware 2026-08-26 — ``*#22*5#2#1*#11*1*8970*0##`` was answered
+    with ``*#22*5#2#1*11*1*8970*1##``, and ``*14`` writes preset 15.
+
+    So this **overwrites a preset of the installation**, and it retunes the
+    source immediately: the bus answers with dimension 5 and dimension 11 within
+    about 250 ms. The integration always writes the same scratch preset, the
+    ``tuning_preset`` option of the gateway, so that selecting a station leaves
+    the other fourteen alone.
+
+    Unlike the station commands this frame has no empty WHAT parameter, so
+    ``myhome.send_message`` accepts it too.
     """
-    return f"*#22*5#2#{source}*#11*{modulation}*{frequency}*{station}##"
+    return f"*#22*5#2#{source}*#11*{modulation}*{frequency}*{station_index}##"
 
 
 # Every request below was verified on hardware, and answered even with the
@@ -603,18 +669,60 @@ def station_name(frequency: Optional[int], table: Optional[dict] = None) -> Opti
     defaults to the built-in FM band around Bordeaux. A gateway can override it
     through the ``radio_stations`` option of the configuration file.
     """
+    _entry = _closest_station(frequency, table)
+    return _entry[1] if _entry else None
+
+
+def station_label(frequency: Optional[int], table: Optional[dict] = None) -> Optional[str]:
+    """Label of the station at ``frequency``, as :func:`station_entries` writes it.
+
+    The name on its own, unless the table carries it at more than one frequency.
+    """
+    _entry = _closest_station(frequency, table)
+    return _entry[2] if _entry else None
+
+
+def _closest_station(frequency: Optional[int], table: Optional[dict]):
+    """Entry of ``table`` nearest to ``frequency``, within the match tolerance."""
     if frequency is None:
         return None
-    if table is None:
-        table = STATIONS
     _best = None
     _best_distance = STATION_MATCH_TOLERANCE + 1
-    for _frequency, _name in table.items():
-        _distance = abs(_frequency - frequency)
+    for _entry in station_entries(table):
+        _distance = abs(_entry[0] - frequency)
         if _distance <= STATION_MATCH_TOLERANCE and _distance < _best_distance:
-            _best = _name
+            _best = _entry
             _best_distance = _distance
     return _best
+
+
+def station_entries(table: Optional[dict] = None) -> list:
+    """``(frequency, name, label)`` for every station of ``table``, by frequency.
+
+    ``table`` maps a frequency in hundredths of MHz to a station name, and
+    defaults to the built-in FM band, exactly as :func:`station_name` does.
+
+    The label is what a user picks from: the station name on its own, suffixed
+    with its frequency when the same name is carried by more than one of them,
+    since Home Assistant identifies a source by its label alone.
+    """
+    if table is None:
+        table = STATIONS
+    _occurrences = {}
+    for _name in table.values():
+        _occurrences[str(_name)] = _occurrences.get(str(_name), 0) + 1
+    _entries = []
+    for _frequency, _name in sorted(table.items()):
+        _name = str(_name)
+        _label = _name if _occurrences[_name] == 1 else f"{_name} ({_megahertz(_frequency)})"
+        _entries.append((_frequency, _name, _label))
+    return _entries
+
+
+def _megahertz(frequency: int) -> str:
+    """``8970`` as ``89.7``, ``10245`` as ``102.45``."""
+    _decimals = 1 if frequency % 10 == 0 else 2
+    return f"{frequency / 100:.{_decimals}f}"
 
 
 def format_frequency(frequency: Optional[int], modulation: int = MODULATION_FM) -> Optional[str]:
@@ -629,5 +737,4 @@ def format_frequency(frequency: Optional[int], modulation: int = MODULATION_FM) 
         return None
     if modulation != MODULATION_FM:
         return f"{frequency} kHz"
-    _decimals = 1 if frequency % 10 == 0 else 2
-    return f"{frequency / 100:.{_decimals}f} MHz"
+    return f"{_megahertz(frequency)} MHz"

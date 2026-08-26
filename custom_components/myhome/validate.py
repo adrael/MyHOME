@@ -31,7 +31,10 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
+from homeassistant.components.number import DOMAIN as NUMBER
 from homeassistant.const import CONF_NAME, CONF_MAC
+
+from .sound_diffusion import DEFAULT_TUNING_PRESET, MAX_STATION_PRESET, tuner_device_id
 
 from .const import (
     CONF_PLATFORMS,
@@ -45,6 +48,7 @@ from .const import (
     CONF_ZONE,
     CONF_SOURCE,
     CONF_RADIO_STATIONS,
+    CONF_TUNING_PRESET,
     CONF_FAN_SUPPORT,
     CONF_MANUFACTURER,
     CONF_DEVICE_MODEL,
@@ -185,17 +189,28 @@ class RadioStations(object):
 
     Frequencies are rekeyed to hundredths of MHz, the unit the bus uses and the
     one `sound_diffusion.station_name` matches against.
+
+    Rekeying is lossy — `106`, `106.0` and `106.004` all land on 10600 — so two
+    keys reaching the same one are refused rather than silently collapsed into
+    whichever came last in the file.
     """
 
     def __call__(self, v):
         if not isinstance(v, dict):
             raise Invalid(f"Invalid radio stations table {v}, it must be a mapping of frequencies in MHz to station names.")
         _table = {}
+        _written_by = {}
         for _frequency, _name in v.items():
             try:
                 _key = int(round(float(_frequency) * 100))
             except (TypeError, ValueError):
                 raise Invalid(f"Invalid radio station frequency {_frequency}, it must be a frequency in MHz like '106.0'.") from None
+            if _key in _table:
+                raise Invalid(
+                    f"Invalid radio stations table, `{_written_by[_key]}` and `{_frequency}` are the same frequency "
+                    f"({_key / 100} MHz) and only one of them would be kept."
+                )
+            _written_by[_key] = _frequency
             _table[_key] = str(_name)
         return _table
 
@@ -219,6 +234,12 @@ class BusInterface(object):
         return "BusInterface(%s, msg=%r)" % ("String", self.msg)
 
 
+#: Keys of a gateway that configure the gateway itself rather than a platform.
+#: `tuning_preset` carries a default, so it is present on every gateway, media
+#: player or not: forgetting it here would break installations that have none.
+GATEWAY_OPTIONS = (CONF_RADIO_STATIONS, CONF_TUNING_PRESET)
+
+
 class MyHomeConfigSchema(Schema):
     def __call__(self, data):
         data = super().__call__(data)
@@ -229,10 +250,11 @@ class MyHomeConfigSchema(Schema):
             for platform in data[gateway]:
                 if platform == CONF_MAC:
                     continue
-                if platform == CONF_RADIO_STATIONS:
+                if platform in GATEWAY_OPTIONS:
                     # A gateway wide option, not a platform: `__init__.py` forwards
-                    # every key of CONF_PLATFORMS to `async_forward_entry_setups`.
-                    _rekeyed_data[data[gateway][CONF_MAC]][CONF_RADIO_STATIONS] = data[gateway][platform]
+                    # every key of CONF_PLATFORMS to `async_forward_entry_setups`,
+                    # and would try to set up a platform named after the option.
+                    _rekeyed_data[data[gateway][CONF_MAC]][platform] = data[gateway][platform]
                     continue
                 _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][platform] = data[gateway][platform]
 
@@ -255,7 +277,47 @@ class MyHomeConfigSchema(Schema):
                         if not value[CONF_WHERE].startswith("#"):
                             _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][BUTTON][key] = value
 
+            _add_tuner_devices(_rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS])
+
         return _rekeyed_data
+
+
+def _add_tuner_devices(platforms: dict) -> None:
+    """Derive one tuner device per source the configured amplifiers listen to.
+
+    Nothing declares a tuner in the configuration file: it is the box behind the
+    amplifiers, and the `source` option of each of them names it. So the devices
+    are built here, which is also what gets `number` and `button` into
+    `CONF_PLATFORMS` — the keys `__init__.py` forwards to
+    `async_forward_entry_setups` and unloads again.
+
+    A device per platform rather than one shared between the two: `button.py`
+    deletes its own on unload, and it must not empty the `number` platform on
+    its way out.
+    """
+    if MEDIA_PLAYER not in platforms:
+        return
+
+    _sources = sorted({_amplifier[CONF_SOURCE] for _amplifier in platforms[MEDIA_PLAYER].values()})
+    platforms.setdefault(NUMBER, {})
+    platforms.setdefault(BUTTON, {})
+
+    for _source in _sources:
+        # One source is the common case, and "Tuner FM" reads better than
+        # "Tuner FM 1" in front of the single tuner of a house.
+        _name = "Tuner FM" if len(_sources) == 1 else f"Tuner FM {_source}"
+        for _platform in (NUMBER, BUTTON):
+            platforms[_platform][tuner_device_id(_source)] = {
+                CONF_WHO: "22",
+                CONF_WHERE: f"2#{_source}",
+                CONF_SOURCE: _source,
+                CONF_NAME: _name,
+                CONF_ENTITY_NAME: None,
+                CONF_ICON: None,
+                CONF_MANUFACTURER: None,
+                CONF_DEVICE_MODEL: None,
+                CONF_ENTITIES: {},
+            }
 
 
 class MyHomeDeviceSchema(Schema):
@@ -500,6 +562,7 @@ gateway_schema = Schema(
         Optional(CLIMATE): climate_schema,
         Optional(MEDIA_PLAYER): media_player_schema,
         Optional(CONF_RADIO_STATIONS): RadioStations(),
+        Optional(CONF_TUNING_PRESET, default=DEFAULT_TUNING_PRESET): All(Coerce(int), Range(min=1, max=MAX_STATION_PRESET)),
     }
 )
 

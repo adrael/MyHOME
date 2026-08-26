@@ -13,6 +13,8 @@ from homeassistant.const import (
     CONF_MAC,
 )
 
+from homeassistant.exceptions import ServiceValidationError
+
 from OWNd.message import OWNCommand
 
 from .const import (
@@ -24,6 +26,7 @@ from .const import (
     CONF_SOURCE,
     CONF_SOUND_SOURCES,
     CONF_TUNER_REQUESTED,
+    CONF_TUNING_PRESET,
     CONF_WHO,
     CONF_WHERE,
     CONF_MANUFACTURER,
@@ -34,6 +37,7 @@ from .const import (
 from .myhome_device import MyHOMEEntity
 from .gateway import MyHOMEGatewayHandler
 from .sound_diffusion import (
+    DEFAULT_TUNING_PRESET,
     MAX_VOLUME,
     MODULATION_FM,
     AmplifierCommand,
@@ -42,12 +46,16 @@ from .sound_diffusion import (
     AreaCommand,
     SOURCE_EVENTS,
     SoundDiffusionEvent,
+    SourceFrequencyStation,
     amplifier_off,
     amplifier_on_simple,
     format_frequency,
     request_amplifier_state,
     request_amplifier_volume,
     request_source_frequency_station,
+    set_frequency,
+    station_entries,
+    station_label,
     station_name,
     station_next,
     station_previous,
@@ -99,6 +107,7 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         | MediaPlayerEntityFeature.VOLUME_STEP
         | MediaPlayerEntityFeature.NEXT_TRACK
         | MediaPlayerEntityFeature.PREVIOUS_TRACK
+        | MediaPlayerEntityFeature.SELECT_SOURCE
     )
 
     def __init__(
@@ -179,6 +188,16 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_RADIO_STATIONS) or None
 
     @property
+    def _tuning_preset(self) -> int:
+        """Preset `select_source` overwrites, the `tuning_preset` of the gateway.
+
+        Read with a default rather than with `or`, unlike `_radio_stations`
+        just above: an empty station table means "no table", a preset of 0
+        means nothing at all and must not be quietly read as 15.
+        """
+        return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_TUNING_PRESET, DEFAULT_TUNING_PRESET)
+
+    @property
     def _frequency(self):
         """Frequency the shared tuner is on, whatever this amplifier is doing."""
         return self._tuner.get("frequency")
@@ -212,6 +231,30 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
     @property
     def media_channel(self):
         return self._station_name if self._is_on else None
+
+    @property
+    def source_list(self):
+        """Every station of the table, by frequency, as Home Assistant shows them.
+
+        The list is the same on every amplifier of a source: it describes what
+        the tuner can be sent to, not what this amplifier is doing.
+        """
+        return [_label for _frequency, _name, _label in station_entries(self._radio_stations)]
+
+    @property
+    def source(self):
+        """Station the shared tuner is on, `None` when its frequency is unlisted.
+
+        Scoped to the tuner, like `frequency_mhz` and `preset`, not to this
+        amplifier: it names what the shared box is tuned to whether this
+        amplifier plays it or not. Selecting a station works with the amplifier
+        off too, so a source that emptied itself when it did would leave a
+        dropdown with nothing selected in front of a working control.
+
+        What comes out of *this* amplifier is `media_channel`, which does go
+        quiet when it is off.
+        """
+        return station_label(self._frequency, self._radio_stations)
 
     @property
     def extra_state_attributes(self):
@@ -315,6 +358,37 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
             self._set_raw_volume(self._raw_volume - 1)
             self.async_write_ha_state()
         await self._command(volume_down(self._area, self._point))
+
+    async def async_select_source(self, source: str):
+        """Tune the shared source to a station of the table.
+
+        The tuner only goes to a frequency by having it written into one of its
+        fifteen presets, so this overwrites the same scratch preset every time —
+        the `tuning_preset` option of the gateway, 15 by default. The preset
+        number in the frame is 0-based, hence the `- 1`; see
+        :func:`sound_diffusion.set_frequency`.
+
+        The bus echoes the new tuning about 250 ms later, which the optimistic
+        refresh only hides. Both the frequency and the preset are recorded, so
+        that echo says nothing new and the amplifiers are written once.
+        """
+        _frequency = next(
+            (_frequency for _frequency, _name, _label in station_entries(self._radio_stations) if _label == source),
+            None,
+        )
+        if _frequency is None:
+            raise ServiceValidationError(f"`{source}` is not a station of this gateway's table.")
+
+        _preset = self._tuning_preset
+        self._gateway_handler.refresh_sound_source(
+            SourceFrequencyStation(
+                source=self._tuner_source,
+                modulation=MODULATION_FM,
+                frequency=_frequency,
+                station=_preset,
+            )
+        )
+        await self._command(set_frequency(self._tuner_source, _frequency, _preset - 1))
 
     async def async_media_next_track(self):
         """Select the next station of the shared tuner, spec form.

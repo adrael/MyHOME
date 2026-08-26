@@ -33,11 +33,18 @@ Please find the [configuration](https://github.com/anotherjulien/MyHOME/wiki/Con
 
 This fork adds a `media_player` platform for MyHOME sound diffusion amplifiers.
 Each amplifier becomes one `media_player` entity supporting on/off, volume set
-and volume step, and next/previous station.
+and volume step, next/previous station, and picking a station by name from the
+source list.
+
+The tuner behind them gets a device of its own, with a frequency you can set in
+MHz and four buttons — see [Tuner entities](#tuner-entities). Nothing to
+configure: it is derived from the amplifiers you already declared.
 
 The integration needs Home Assistant 2024.3 or later. The example dashboard
-needs 2025.1 or later (the `media-player-volume-slider` tile feature);
-`show_mute_button` only matters on 2026.6 and above.
+needs 2025.1 or later (the `media-player-volume-slider` tile feature); the
+station dropdown on a tile needs 2026.5 (`media-player-source`) and
+`show_mute_button` only matters on 2026.6 and above. The Source menu of the
+more-info dialog needs none of that.
 
 All amplifiers of an installation usually share the same source (a single tuner),
 so changing station on one amplifier changes it for all of them. The integration
@@ -51,19 +58,19 @@ to. `where` is the amplifier's address, `3#<area>#<point>`, with the area and th
 point both in `[1-9]`.
 
 ```yaml
-villa:
+house:
   mac: "00:03:50:11:22:33"
   media_player:
     ampli_cuisine:          { where: "3#7#1", name: "Radio Cuisine" }
     ampli_suite:            { where: "3#2#1", name: "Radio Suite" }
     ampli_suite_sdb:        { where: "3#2#2", name: "Radio Suite SDB" }
-    ampli_bureau_julie:     { where: "3#3#1", name: "Radio Bureau Julie" }
-    ampli_bureau_julie_sdb: { where: "3#3#2", name: "Radio Bureau Julie SDB" }
+    ampli_office_1:         { where: "3#3#1", name: "Radio Office 1" }
+    ampli_office_1_sdb:     { where: "3#3#2", name: "Radio Office 1 SDB" }
     ampli_gym:              { where: "3#4#1", name: "Radio Gym" }
     ampli_chambre_ami:      { where: "3#5#1", name: "Radio Chambre Ami" }
     ampli_chambre_ami_sdb:  { where: "3#5#2", name: "Radio Chambre Ami SDB" }
-    ampli_bureau_raph:      { where: "3#6#1", name: "Radio Bureau Raph" }
-    ampli_bureau_raph_sdb:  { where: "3#6#2", name: "Radio Bureau Raph SDB" }
+    ampli_office_2:         { where: "3#6#1", name: "Radio Office 2" }
+    ampli_office_2_sdb:     { where: "3#6#2", name: "Radio Office 2 SDB" }
     # ampli_tablette:       { where: "3#1#1", name: "Radio Tablette" }
 ```
 
@@ -83,11 +90,12 @@ Available options, per amplifier:
 | `manufacturer` | `BTicino S.p.A.` | Device manufacturer                                      |
 | `model`        | `None`           | Device model                                             |
 
-And one option on the gateway itself:
+And two options on the gateway itself:
 
-| Option           | Default           | Description                                    |
-| ---------------- | ----------------- | ---------------------------------------------- |
-| `radio_stations` | FM band, Bordeaux | Frequency (MHz) to station name, see below      |
+| Option           | Default           | Description                                                       |
+| ---------------- | ----------------- | ----------------------------------------------------------------- |
+| `radio_stations` | FM band, Bordeaux | Frequency (MHz) to station name, see below                        |
+| `tuning_preset`  | `15`              | Preset (1-15) selecting a station overwrites, see below            |
 
 ### Station names
 
@@ -98,7 +106,7 @@ every update**: to keep your own, set the `radio_stations` option on the gateway
 rather than editing `sound_diffusion.py`.
 
 ```yaml
-villa:
+house:
   mac: "00:03:50:11:22:33"
   radio_stations:
     "106.0": SUD RADIO
@@ -108,7 +116,105 @@ villa:
     ampli_cuisine: { where: "3#7#1", name: "Radio Cuisine" }
 ```
 
-Frequencies not listed simply show without a name (`101.1 MHz`).
+Frequencies not listed simply show without a name (`101.1 MHz`). Keys are read
+as hundredths of MHz, so `106`, `106.0` and `106.004` are the same station:
+listing two of them is refused at startup rather than keeping whichever came
+last.
+
+### Selecting a station
+
+Every amplifier exposes the station table as its source list, so a station can
+be picked by name rather than stepped through:
+
+```yaml
+action: media_player.select_source
+target:
+  entity_id: media_player.radio_cuisine
+data:
+  source: FRANCE INTER
+```
+
+The list is sorted by frequency and holds the names of the table — the built-in
+one, or `radio_stations` when the gateway sets it. A name carried by two
+frequencies is suffixed with its own (`RELAIS (97.3)`), since Home Assistant
+tells two sources apart by their label alone.
+
+**This overwrites one preset of your tuner.** An FM tuner has no "go to
+106.0 MHz" command: the only way there is to write the frequency into one of its
+fifteen presets, which retunes it at once. The integration therefore always
+writes the *same* scratch preset — `tuning_preset`, 15 by default — so the
+fourteen others keep whatever you stored in them. Set `tuning_preset` to
+whichever slot you are happy to lose:
+
+```yaml
+house:
+  mac: "00:03:50:11:22:33"
+  tuning_preset: 15
+```
+
+Two consequences of it being a preset:
+
+- After picking a station the tuner sits on `tuning_preset`, so the next
+  **station +** press moves to the preset after it — from 15 it wraps back
+  round to preset 1. That is the tuner cycling through its fifteen slots, not
+  the integration losing its place.
+- Selecting a station **does not turn an amplifier on**, exactly like
+  next/previous station: the tuner is shared by the whole installation, and
+  which amplifiers play it is a separate question.
+
+`source` is scoped to the **tuner**, like `frequency_mhz` and `preset`: every
+amplifier names the station the shared box is on, playing it or not.
+`source_list` is always there and selecting works with the amplifier off, so a
+dropdown on a switched-off amplifier shows what it would play rather than
+nothing at all. `media_channel` is the amplifier-scoped one, and does go quiet
+when it stops.
+
+### Tuner entities
+
+The amplifiers are speakers. The box behind them — the one that holds the
+frequency and the fifteen presets — is a device of its own, **Tuner FM**, with
+five entities:
+
+| Entity | What it does | Frame |
+| ------ | ------------ | ----- |
+| `number.tuner_fm_frequency` | The frequency in MHz, 87.5 to 108.0 in 0.05 steps. Reading it is what the tuner reports; setting it retunes | `*#22*5#2#<s>*#11*1*<freq>*<n>##` |
+| `button.tuner_fm_seek_up` | Scan upwards to the next station the tuner catches | `*22*5#*2#<s>##` |
+| `button.tuner_fm_seek_down` | Scan downwards | `*22*6#*2#<s>##` |
+| `button.tuner_fm_next_preset` | Next of the fifteen presets | `*22*9#*2#<s>##` |
+| `button.tuner_fm_previous_preset` | Previous preset | `*22*10#*2#<s>##` |
+
+They appear under **Settings > Devices & services > MyHOME**, as a device next
+to the amplifiers, and are created as soon as one `media_player` is configured:
+nothing is added to `myhome.yaml`. The source of each amplifier says which tuner
+it listens to, so a house whose amplifiers all sit on source 1 gets one device
+called *Tuner FM*; a bus with several gets *Tuner FM 1*, *Tuner FM 2*, … and one
+set of entities each (`number.tuner_fm_2_frequency`, and so on).
+
+Setting the frequency is `media_player.select_source` without the station table:
+
+```yaml
+action: number.set_value
+target:
+  entity_id: number.tuner_fm_frequency
+data:
+  value: 101.1
+```
+
+**It spends the same scratch preset** — `tuning_preset`, 15 by default — for the
+same reason: an FM tuner is only sent to a frequency by having it written into
+one of its slots. Everything said under "Selecting a station" applies unchanged,
+including that it does not turn any amplifier on.
+
+The two **seek** buttons are the tuner's own automatic scan, and they are the
+only control here that is not a preset. Seeking upwards reports the frequency it
+landed on and nothing else, so pressing either of them clears the `preset`
+attribute straight away and it stays away until the tuner sits on a slot again
+(seeking downwards past one puts it back). That is the tuner, not the
+integration losing count.
+
+The entities follow the gateway connection like the amplifiers do, and they are
+tuner-scoped throughout: the frequency is what the shared box is on, whether a
+single amplifier is playing it or not.
 
 ### Attributes
 
@@ -122,6 +228,13 @@ is added only when it is not FM (2 long wave, 3 medium wave, 4 short wave).
 Attributes without a value are left out, so an amplifier of a gateway whose
 tuner never answered carries only its addressing.
 
+`preset` disappears when one of the seek buttons is pressed. Seeking upwards
+reports the new frequency and nothing else — verified on hardware — so the slot
+number we hold would be stale, and it is dropped rather than shown as if it were
+still true. The frequency and the station name stay; the preset comes back on
+the next frame that carries one. A seek done at a *wall control* is invisible to
+us, so the preset shown until then is the one the tuner started from.
+
 What comes out of *this* amplifier is a different matter: `media_title`,
 `media_channel` and `media_content_type` are `None` unless it is playing.
 
@@ -132,9 +245,10 @@ What comes out of *this* amplifier is a different matter: `media_title`,
   bus has one tuner.
 - **Volume is a 0-31 integer**, so the slider moves in 32 steps. Home Assistant's
   0..1 level is rounded to the nearest of them.
-- **No mute, no pause, no source selection.** The integration offers on/off,
-  volume and station, and nothing else. Selecting a source does work on the bus
-  (WHAT 35, see below); it is simply not exposed as a feature.
+- **No mute, no pause.** The integration offers on/off, volume and station, and
+  nothing else. Home Assistant's "source" is used for the *stations* of the
+  tuner; moving an amplifier to another *bus source* does work (WHAT 35, see
+  below) but is not exposed as a feature.
 - **Entity ids** come from the device name, as usual: `name: "Radio Cuisine"`
   gives `media_player.radio_cuisine`.
 - **The state is `playing`, not `on`.** A media player that reports `on` gets
@@ -145,6 +259,14 @@ What comes out of *this* amplifier is a different matter: `media_title`,
   unavailable while the gateway is unreachable, and comes back as soon as the
   listener reconnects. After an outage every amplifier and the tuner are asked
   for their state again, since the bus went on living without us.
+- **An entity disabled in the registry comes back on the next restart**, enabled.
+  This is upstream behaviour and this fork does not change it: on every setup,
+  `__init__.py` prunes the registry of what it cannot find in `hass.data`, and
+  `hass.data` is filled by the entities *as they are added*. A disabled entity is
+  never added, so its unique id is missing from that list, its registry entry is
+  removed as an orphan — and it is created afresh, enabled, the next time round.
+  **Hide** the entity instead of disabling it (a hidden entity is still added, so
+  it survives the prune), or take the device out of `myhome.yaml` altogether.
 - **Groups**: a `platform: group` media player is fine for on/off and volume,
   but **never send next/previous track to a group**. Each member would ask the
   shared tuner for the next station and it would jump once per member. Drive the
@@ -163,21 +285,31 @@ media_player:
 ### Dashboard
 
 [`examples/dashboard-radios.yaml`](examples/dashboard-radios.yaml) is a ready to
-paste "Radios" view: the shared tuner at the top with its two station buttons,
-then one section per room with a volume slider and a pair of on/off buttons —
-plus a "turn every amplifier off" button. Every room gets the pair: tapping a
-tile's icon does not toggle a media player.
+paste "Radios" view: the shared tuner at the top, then one tile per amplifier
+grouped by room. Tapping a tile's icon toggles that amplifier, tapping the tile
+opens its more-info dialog, and the slider sets the volume.
+
+The Tuner section is the tuner device and nothing else: what it is playing on
+three attribute rows, `number.tuner_fm_frequency` as a slider
+(the `numeric-input` tile feature, Home Assistant 2024.11+), the four tuner
+buttons, and a "turn every amplifier off" button. None of them touches an
+amplifier, which is the point — one tuner, one place to drive it, no risk of
+sending a station step once per member of a group.
+
+The kitchen tile keeps the station dropdown (`media-player-source`, Home
+Assistant 2026.5+), the one place a station is picked by name. On an older Home
+Assistant, drop that feature and pick the station from the Source menu of any
+amplifier's more-info dialog.
 
 Paste the `- title: Radios` item into the `views:` list of your own dashboard
 (raw configuration editor) rather than over the whole file, and adapt the entity
-ids to your own `name:` values. The station buttons address the kitchen
-amplifier and nothing else, for the reason given just above.
+ids to your own `name:` values.
 
 ### Verified on hardware
 
-One session against the installation this fork was written for (gateway F454,
-amplifier `3#2#2`, FM tuner `2#1`, 2026-08-25) put every frame the integration
-sends on the bus, and both forms of the commands that had two:
+Two sessions against the installation this fork was written for (gateway F454,
+amplifier `3#2#2`, FM tuner `2#1`, 2026-08-25 and 2026-08-26) put every frame
+the integration sends on the bus, and both forms of the commands that had two:
 
 | Frame | What the bus did |
 | ----- | ---------------- |
@@ -187,6 +319,9 @@ sends on the bus, and both forms of the commands that had two:
 | `*#22*3#<a>#<p>*#1*<v>##` — set volume | **absolute**: 10 then 14 leaves it on 14, not 24; echoed within ~150 ms, which is all the optimistic write hides |
 | `*22*9#*2#<s>##`, `*22*10#*2#<s>##` — station ± | the tuner moves; dimensions 5, 11 and 6 follow within ~200 ms |
 | `*22*9*5#3#<a>#<p>##` — station +, wall form | moves it too |
+| `*22*5#*2#<s>##` — seek up, automatic | the tuner jumps to the next station it catches and answers `*#22*5#2#1*5*1*10730##` — **dimension 5 alone**, no 11 and no 6, so the preset it was on is left behind |
+| `*22*6#*2#<s>##` — seek down, automatic | same, plus `*#22*5#2#1*11*1*10680*15##` when the frequency falls back onto a stored preset |
+| `*#22*5#2#<s>*#11*<mod>*<freq>*<n>##` — retune | retunes at once (~250 ms) **and overwrites preset `n + 1`**: `*0` came back as `*11*1*8970*1##`, so preset 15 is written as `*14` |
 | `*22*35#4#<a>#<s>*3#<a>#<p>##` — on, on that source | on; two routing events follow |
 | `*#22*3#<a>#<p>*12##`, `*#22*3#<a>#<p>*1##`, `*#22*5#2#<s>*11##` — requests | answered, **even with the amplifier off** |
 
@@ -199,11 +334,23 @@ Two consequences worth knowing:
 - **A request addressed to one source is answered by all of them.** Sources 2 to
   4 exist on this bus and are tuned to something; the amplifiers listening to
   source 1 ignore what they say.
+- **The tuner holds fifteen presets and cycles through them.** Stepping past
+  preset 15 lands on preset 1, which is why selecting a station spends the last
+  slot by default.
+- **A scan says less than a preset step does.** Seeking upwards reports a
+  frequency and stops there, so the preset number we hold is stale — see the
+  `preset` attribute above. A preset *step*, on the other hand, answers with a
+  frequency (dimension 5) and then its slot (dimension 11) about 20 ms later,
+  which is why the frequency alone is not read as "the preset is gone". The band
+  was driven from 87.7 to 107.3 MHz, every frequency accepted.
 
-The station commands the integration sends (`*22*9#*2#<source>##` and its
-previous) end on an empty WHAT parameter. OWNd builds the frame but marks it
-invalid, and the `myhome.send_message` service refuses what is marked invalid:
-these two cannot be sent by hand through that service, only by the entity.
+The four frames the tuner buttons send (`*22*5#`, `*22*6#`, `*22*9#`, `*22*10#`,
+all addressed `*2#<source>##`) end on an empty WHAT parameter. OWNd builds them
+but marks them invalid, and the `myhome.send_message` service refuses what is
+marked invalid: none of the four can be sent by hand through that service, only
+by pressing the button — or, for the two station ones, by the amplifier's
+next/previous track. Writing dimension 11, which the frequency uses, has no such
+parameter and goes through `send_message` fine.
 
 ### Experimental / not verified on hardware
 
@@ -216,19 +363,12 @@ that bus. It may behave differently, or not at all.
   amplifiers report their own state a moment later either way.
 - **AM display.** Any modulation other than FM is printed in kHz, untested; the
   installation this was written against only has an FM tuner.
-- **Seeking a frequency** (`frequency_seek_up` / `_down`) and **memorising a
-  preset** (`store_station`). The first is untried, the second overwrites a
-  preset of your installation.
-- **Setting a frequency** has no dedicated service. The existing
-  `myhome.send_message` service can write dimension 11 on a source — this frame
-  carries no empty WHAT parameter, so the service accepts it:
-
-```yaml
-action: myhome.send_message
-data:
-  gateway: "00:03:50:11:22:33"
-  message: "*#22*5#2#1*#11*1*10600*14##"   # source 1, FM, 106.00 MHz, preset 14
-```
+- **Seeking by a given step** (`frequency_seek_up(step=…)`). The automatic
+  form, which the two seek buttons send, is verified; passing a step is not.
+- **Memorising the current frequency on a preset** (`store_station`, WHAT 33).
+  Untried, and it overwrites a preset of your installation. Writing dimension
+  11, which `select_source` and `number.set_value` use, is verified and does not
+  need it.
 
 ### Installing / migrating from upstream (anotherjulien/MyHOME)
 
@@ -254,9 +394,10 @@ Manually, if you would rather not add a custom repository: back up
 `custom_components/myhome/`, add the `media_player:` block to `myhome.yaml`, and
 restart.
 
-To roll back, reinstall the upstream integration **and comment out both the
-`media_player:` and the `radio_stations:` keys of `myhome.yaml`** before
-restarting: upstream knows neither and will refuse the file.
+To roll back, reinstall the upstream integration **and comment out the
+`media_player:`, `radio_stations:` and `tuning_preset:` keys of
+`myhome.yaml`** before restarting: upstream knows none of them and will refuse
+the file.
 
 ### First run
 
@@ -275,8 +416,9 @@ the sound diffusion bus is chatty.
 
 What to check after the restart:
 
-- **Settings > Devices & services > MyHOME** lists one device per amplifier. If
-  it lists none, the `media_player:` block is under the wrong gateway key in
+- **Settings > Devices & services > MyHOME** lists one device per amplifier,
+  plus the *Tuner FM* device. If it lists none, the `media_player:` block is
+  under the wrong gateway key in
   `myhome.yaml` — it belongs under the gateway whose `mac:` matches your
   config entry. Remember `myhome.yaml` is read when the config entry is set up,
   so every edit needs a restart.
@@ -293,7 +435,14 @@ A short FAQ of what surprises people first:
 - **Changing station moves the whole house.** There is one tuner. That is the
   installation, not the integration.
 - **Never send next/previous track to a group.** The station would jump once per
-  member.
+  member. `select_source` is absolute and safe to repeat, but it still moves the
+  whole house.
+- **Picking a station changed my preset 15.** It is meant to: see "Selecting a
+  station" and the `tuning_preset` option. Setting
+  `number.tuner_fm_frequency` spends the same slot.
+- **The Preset row went blank after a seek.** The tuner left the slot it was on
+  and only reports a frequency; see "Tuner entities". It comes back on the next
+  frame carrying a slot number.
 - **Sources 2 to 4 answer on the bus** and show up in a debug log. The
   amplifiers listening to source 1 ignore them.
 
