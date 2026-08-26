@@ -1,5 +1,7 @@
 """Code to handle a MyHome Gateway."""
 import asyncio
+import logging
+import re
 from typing import Dict, List
 
 from homeassistant.const import (
@@ -29,6 +31,7 @@ from homeassistant.components.sensor import (
 from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.components.number import DOMAIN as NUMBER
+from homeassistant.components.select import DOMAIN as SELECT
 
 from OWNd.connection import OWNSession, OWNEventSession, OWNCommandSession, OWNGateway
 from OWNd.message import (
@@ -75,6 +78,7 @@ from .sound_diffusion import (
     SOURCE_EVENTS,
     SourceFrequency,
     SourceFrequencyStation,
+    SourceRds,
     SourceStation,
     amplifier_device_id,
     parse_sound_diffusion,
@@ -88,6 +92,60 @@ from .button import (
 #: Long enough not to spin on a gateway that is down, short enough to be back
 #: within a breath of it coming up.
 EVENT_SESSION_RETRY_DELAY = 1
+
+#: WHOs this integration ignores on purpose: video door entry (6 and 7) and the
+#: door entry system (8). OWNd 0.7.48 models none of them, so their frames reach
+#: the listener as raw strings — `*6*10*4000##` and `*8*19*20##` were both seen
+#: on this bus — and each would be logged as "data received is not a message",
+#: once per call and per press. Everything else keeps warning, as upstream does:
+#: a WHO nobody expected is worth knowing about.
+IGNORED_WHOS = ("6", "7", "8")
+
+#: WHO of a frame, command (`*<who>*…`) or dimension (`*#<who>*…`) alike.
+_FRAME_WHO = re.compile(r"^\*#?(?P<who>\d+)[*#]")
+
+
+def frame_who(raw: str):
+    """WHO an OpenWebNet frame is addressed to, `None` when it is not one."""
+    _match = _FRAME_WHO.match(raw)
+    return _match.group("who") if _match else None
+
+
+class OWNdLogFilter(logging.Filter):
+    """Quietens the one traceback OWNd 0.7.48 logs for a frame it cannot parse.
+
+    Its `get_next` catches whatever its own parser raises, answers `None` —
+    which `listening_loop` knows what to do with — and logs `Event session
+    crashed.` with a traceback on the way. A WHO=13 time write without a
+    timezone raises an `IndexError` there, and a gateway sends one of those on
+    its own: an exception in the log every time, about a bug that cannot be
+    fixed from here, for a frame nothing reads.
+
+    So that record is dropped and said again at DEBUG on the logger handed here
+    — this integration's own, which carries no such filter, so it cannot loop.
+    Every other record OWNd writes goes through untouched.
+    """
+
+    #: What OWNd logs for it; matched on the part that is not the traceback.
+    CRASH = "Event session crashed"
+
+    def __init__(self, logger):
+        super().__init__()
+        self._logger = logger
+
+    def filter(self, record) -> bool:
+        _message = record.getMessage()
+        if self.CRASH not in _message:
+            return True
+        self._logger.debug("OWNd could not read a frame: %s", _message, exc_info=record.exc_info)
+        return False
+
+
+#: Logger handed to the OWNd sessions, so what OWNd says can be filtered without
+#: touching what this integration says. A child of the integration's logger, so
+#: it follows the same level and the same handlers.
+OWND_LOGGER = LOGGER.getChild("ownd")
+OWND_LOGGER.addFilter(OWNdLogFilter(LOGGER))
 
 
 class MyHOMEGatewayHandler:
@@ -149,14 +207,14 @@ class MyHOMEGatewayHandler:
         return self.gateway.firmware
 
     async def test(self) -> Dict:
-        return await OWNSession(gateway=self.gateway, logger=LOGGER).test_connection()
+        return await OWNSession(gateway=self.gateway, logger=OWND_LOGGER).test_connection()
 
     async def listening_loop(self):
         self._terminate_listener = False
 
         LOGGER.debug("%s Creating listening worker.", self.log_id)
 
-        _event_session = OWNEventSession(gateway=self.gateway, logger=LOGGER)
+        _event_session = OWNEventSession(gateway=self.gateway, logger=OWND_LOGGER)
         await _event_session.connect()
         self._set_connected(True)
 
@@ -233,6 +291,18 @@ class MyHOMEGatewayHandler:
                     LOGGER.debug(
                         "%s Ignoring legacy WHO=16 message: `%s`",
                         self.log_id,
+                        _raw_message,
+                    )
+                    continue
+
+                _who = frame_who(_raw_message)
+                if _who in IGNORED_WHOS:
+                    # A frame of a system this integration does not support and
+                    # OWNd does not model: worth a line, not a warning.
+                    LOGGER.debug(
+                        "%s Ignoring unsupported WHO %s message: `%s`",
+                        self.log_id,
+                        _who,
                         _raw_message,
                     )
                     continue
@@ -452,9 +522,9 @@ class MyHOMEGatewayHandler:
     def _tuner_devices(self, platform: str):
         """Every device of `platform` that is a sound diffusion tuner.
 
-        `validate.py` derives one per source under both `number` and `button`,
-        and the `button` platform also holds the lock buttons of the lights,
-        switches and covers — which have nothing to do with WHO=22.
+        `validate.py` derives one per source under `number`, `button` and
+        `select`, and the `button` platform also holds the lock buttons of the
+        lights, switches and covers — which have nothing to do with WHO=22.
         """
         _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
         if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
@@ -467,9 +537,9 @@ class MyHOMEGatewayHandler:
         """Every sound diffusion entity of this gateway that hass already knows.
 
         The amplifiers of the `media_player` platform and the entities of the
-        tuner devices, spread over `number` and `button`. Those platforms are
-        walked and no other: `available` elsewhere does not follow the
-        connection, and writing those entities would change their behaviour.
+        tuner devices, spread over `number`, `button` and `select`. Those
+        platforms are walked and no other: `available` elsewhere does not follow
+        the connection, and writing those entities would change their behaviour.
 
         The amplifiers come first, so that the one status request a source is
         worth is claimed by an amplifier when a gateway has both.
@@ -478,7 +548,7 @@ class MyHOMEGatewayHandler:
         if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
             return
         _devices = list(_gateway_data[CONF_PLATFORMS].get(MEDIA_PLAYER, {}).values())
-        _devices += list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(BUTTON))
+        _devices += list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(BUTTON)) + list(self._tuner_devices(SELECT))
         for _device in _devices:
             for _entity in _device[CONF_ENTITIES].values():
                 # `hass` is set when the entity is added to a platform; writing
@@ -568,7 +638,7 @@ class MyHOMEGatewayHandler:
             # configured one until a WHAT 35 command moves it, and only the
             # entity knows that. It drops the events of the other sources.
             # The tuner devices read the store too, and drop them the same way.
-            _devices = list(_configured_amplifiers.values()) + list(self._tuner_devices(NUMBER))
+            _devices = list(_configured_amplifiers.values()) + list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(SELECT))
         elif isinstance(_event, BROADCAST_EVENTS):
             # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
             _devices = [_device for _device in _configured_amplifiers.values() if int(_device[CONF_WHERE].split("#")[1]) == _event.area]
@@ -626,15 +696,24 @@ class MyHOMEGatewayHandler:
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
         _before = dict(_source)
 
+        if isinstance(event, (SourceFrequency, SourceFrequencyStation)):
+            # The RDS name belongs to the station that was playing: the tuner
+            # sends the new one a moment later, and until it does there is
+            # nothing to show. Only on a *change* — the first reading of a
+            # gateway is not one, and would wipe a name that arrived first.
+            if _before.get("frequency") is not None and event.frequency != _before["frequency"]:
+                _source["rds"] = None
+            _source["modulation"] = event.modulation
+            _source["frequency"] = event.frequency
+
         if isinstance(event, SourceFrequencyStation):
-            _source["modulation"] = event.modulation
-            _source["frequency"] = event.frequency
             _source["station"] = event.station
-        elif isinstance(event, SourceFrequency):
-            _source["modulation"] = event.modulation
-            _source["frequency"] = event.frequency
         elif isinstance(event, SourceStation):
             _source["station"] = event.station
+        elif isinstance(event, SourceRds):
+            # An empty text is a tuner with nothing to say — eight spaces on the
+            # bus — and is held as "no name" rather than as a blank one.
+            _source["rds"] = event.text or None
 
         return _source != _before
 
@@ -647,7 +726,7 @@ class MyHOMEGatewayHandler:
             worker_id,
         )
 
-        _command_session = OWNCommandSession(gateway=self.gateway, logger=LOGGER)
+        _command_session = OWNCommandSession(gateway=self.gateway, logger=OWND_LOGGER)
         await _command_session.connect()
 
         while not self._terminate_sender:

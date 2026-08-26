@@ -5,6 +5,7 @@ Home Assistant is stubbed (see `ha_stubs`), everything else is the real code:
 """
 
 import asyncio
+import logging
 import os
 import sys
 import types
@@ -22,6 +23,7 @@ validate = ha_stubs.load("validate")
 gateway = ha_stubs.load("gateway")
 media_player = ha_stubs.load("media_player")
 number = ha_stubs.load("number")
+select = ha_stubs.load("select")
 tuner = ha_stubs.load("tuner")
 
 DOMAIN = const.DOMAIN
@@ -126,6 +128,9 @@ class Installation:
         }
 
         self.handler = FakeGateway(self)
+        # What `__init__.py` stores before it forwards the platforms, and what
+        # every `async_setup_entry` reads to reach the gateway.
+        self.data[DOMAIN][MAC][const.CONF_ENTITY] = self.handler
         self.devices = self.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"]
         self.entities = {}
 
@@ -158,6 +163,21 @@ class Installation:
             self._add_tuner_entity(
                 _device,
                 number.MyHOMETunerFrequency(
+                    hass=self,
+                    device_id=_device_id,
+                    who=_device[const.CONF_WHO],
+                    where=_device[const.CONF_WHERE],
+                    name=_device["name"],
+                    source=_device[const.CONF_SOURCE],
+                    manufacturer=_device[const.CONF_MANUFACTURER],
+                    model=_device[const.CONF_DEVICE_MODEL],
+                    gateway=self.handler,
+                ),
+            )
+        for _device_id, _device in _platforms.get("select", {}).items():
+            self._add_tuner_entity(
+                _device,
+                select.MyHOMETunerStation(
                     hass=self,
                     device_id=_device_id,
                     who=_device[const.CONF_WHO],
@@ -837,6 +857,87 @@ def test_a_session_without_reader_is_reopened_and_yields(installation, monkeypat
     assert _session.connects >= 50, "every `None` without a reader must try to reopen the session"
 
 
+@pytest.mark.parametrize(
+    ("raw", "who"),
+    [
+        ("*6*10*4000##", "6"),
+        ("*8*19*20##", "8"),
+        ("*#22*5#2#1*11##", "22"),
+        ("*22*31*2#1##", "22"),
+        ("*#4*1*0*0250##", "4"),
+        ("*1*1*77##", "1"),
+        ("not a frame", None),
+        ("", None),
+    ],
+)
+def test_the_who_of_a_frame(raw, who):
+    assert gateway.frame_who(raw) == who
+
+
+@pytest.mark.parametrize("raw", ["*6*10*4000##", "*8*19*20##", "*8*20*20##", "*#7*1*0##"])
+def test_a_frame_of_an_unsupported_who_is_a_debug_line_not_a_warning(installation, monkeypatch, caplog, raw):
+    """Video door entry (6, 7) and door entry (8): systems this fork ignores.
+
+    OWNd models none of them, so they arrive as raw strings and used to be
+    logged as "data received is not a message" — once per call, per press.
+    """
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        _run_listening_loop(installation, monkeypatch, [raw])
+
+    assert not [_record for _record in caplog.records if _record.levelname == "WARNING"]
+    assert "Ignoring unsupported WHO" in caplog.text
+
+
+def test_a_frame_of_a_who_nobody_expected_still_warns(installation, monkeypatch, caplog):
+    """Only the systems named above are quietened; the rest stays upstream's."""
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        _run_listening_loop(installation, monkeypatch, ["*9*1*0##"])
+
+    assert [_record for _record in caplog.records if _record.levelname == "WARNING"]
+
+
+# --------------------------------------------------------------------------- #
+# What OWNd itself logs
+# --------------------------------------------------------------------------- #
+
+
+def _ownd_record(message):
+    """A record as OWNd would write it, on the logger it was handed."""
+    return logging.LogRecord(gateway.OWND_LOGGER.name, logging.ERROR, __file__, 1, message, (), None)
+
+
+def test_the_ownd_sessions_are_handed_a_logger_of_their_own():
+    """A child of the integration's, so a filter on it touches nothing else."""
+    assert gateway.OWND_LOGGER.name == f"{gateway.LOGGER.name}.ownd"
+    assert any(isinstance(_filter, gateway.OWNdLogFilter) for _filter in gateway.OWND_LOGGER.filters)
+
+
+def test_the_traceback_ownd_logs_for_a_frame_it_cannot_parse_is_dropped(caplog):
+    _filter = gateway.OWNdLogFilter(gateway.LOGGER)
+
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        _kept = _filter.filter(_ownd_record("[gw] Event session crashed. IndexError: list index out of range"))
+
+    assert _kept is False
+    assert "OWNd could not read a frame" in caplog.text
+
+
+def test_every_other_ownd_record_goes_through_untouched(caplog):
+    _filter = gateway.OWNdLogFilter(gateway.LOGGER)
+
+    assert _filter.filter(_ownd_record("[gw] Message `*1*1*77##` was successfully sent.")) is True
+    assert _filter.filter(_ownd_record("[gw] Could not send message `*22*31#1##`.")) is True
+
+
+def test_a_crash_logged_through_the_ownd_logger_never_reaches_warning(caplog):
+    """The whole point: a WHO=13 time write raises in OWNd once an hour."""
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        gateway.OWND_LOGGER.error("[test] Event session crashed.")
+
+    assert not [_record for _record in caplog.records if _record.levelno >= logging.WARNING]
+    assert "OWNd could not read a frame" in caplog.text
+
+
 def test_a_reconnection_survives_an_amplifier_that_cannot_be_updated(installation):
     """One amplifier refusing to talk must not stop the gateway from coming back."""
 
@@ -1241,6 +1342,158 @@ def test_the_first_frequency_of_an_unknown_tuner_carries_no_preset(installation)
 
 
 # --------------------------------------------------------------------------- #
+# RDS: the name the station calls itself
+# --------------------------------------------------------------------------- #
+
+#: The frames of the hardware session of 2026-08-26, verbatim.
+RDS_SKYROCK = "*#22*5#2#1*10*83*75*89*82*79*67*75*32##"
+RDS_M_RADIO = "*#22*5#2#1*10*77*32*82*65*68*73*79*32##"
+RDS_SILENT = "*#22*5#2#1*10*32*32*32*32*32*32*32*32##"
+
+
+def test_the_rds_name_reaches_the_shared_store(installation):
+    installation.replay(["*#22*5#2#1*11*1*8850*3##", RDS_M_RADIO])
+
+    assert installation.tuner[1]["rds"] == "M RADIO"
+
+
+def test_a_tuner_with_nothing_to_say_holds_no_name(installation):
+    """Eight spaces: tuned, but no RDS text has reached the box yet."""
+    installation.replay([RDS_SILENT])
+
+    assert installation.tuner[1]["rds"] is None
+
+
+def test_an_rds_name_that_says_nothing_new_writes_nothing(installation):
+    installation.replay([RDS_SKYROCK])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.replay([RDS_SKYROCK])
+
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+
+def test_the_rds_name_is_dropped_when_the_frequency_moves(installation):
+    """It named the station that was playing; the tuner sends the new one after."""
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK])
+
+    installation.replay(["*#22*5#2#1*5*1*8850##"])
+    assert installation.tuner[1]["rds"] is None
+
+    installation.replay([RDS_M_RADIO])
+    assert installation.tuner[1]["rds"] == "M RADIO"
+
+
+def test_a_frequency_that_did_not_move_keeps_the_rds_name(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK, "*#22*5#2#1*5*1*10280##"])
+
+    assert installation.tuner[1]["rds"] == "SKYROCK"
+
+
+def test_the_first_frequency_of_a_gateway_keeps_a_name_that_arrived_first(installation):
+    """A first reading is not a change: the RDS stream can answer before it."""
+    installation.replay([RDS_SKYROCK, "*#22*5#2#1*11*1*10280*2##"])
+
+    assert installation.tuner[1]["rds"] == "SKYROCK"
+
+
+def test_an_rds_name_of_another_source_leaves_this_one_alone():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+
+    installation.replay(["*#22*5#2#2*10*83*75*89*82*79*67*75*32##"])
+
+    assert installation.tuner[2]["rds"] == "SKYROCK"
+    assert installation.tuner.get(1, {}).get("rds") is None
+
+
+def test_the_rds_name_is_an_attribute_of_every_amplifier_on_that_source(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK])
+
+    assert installation.entity(7, 1).extra_state_attributes["rds_name"] == "SKYROCK"
+    assert installation.entity(2, 2).extra_state_attributes["rds_name"] == "SKYROCK"
+
+
+def test_an_amplifier_of_a_silent_tuner_carries_no_rds_attribute(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##"])
+
+    assert "rds_name" not in installation.entity(7, 1).extra_state_attributes
+
+
+def test_the_station_table_wins_over_the_rds_name(installation):
+    """The table is what a user configured; RDS covers what it does not carry."""
+    installation.replay(["*#22*5#2#1*11*1*9770*4##", RDS_SKYROCK])
+    asyncio.run(installation.entity(7, 1).async_turn_on())
+
+    assert installation.entity(7, 1).media_title == "97.7 MHz · FRANCE CULTURE"
+    assert installation.entity(7, 1).media_channel == "FRANCE CULTURE"
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "FRANCE CULTURE"
+    assert installation.entity(7, 1).extra_state_attributes["rds_name"] == "SKYROCK"
+
+
+def test_a_frequency_the_table_does_not_carry_is_named_by_rds(installation):
+    installation.replay(["*#22*5#2#1*5*1*8830##", RDS_SKYROCK])
+    asyncio.run(installation.entity(7, 1).async_turn_on())
+
+    assert installation.entity(7, 1).media_title == "88.3 MHz · SKYROCK"
+    assert installation.entity(7, 1).media_channel == "SKYROCK"
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "SKYROCK"
+
+
+def test_a_frequency_nothing_names_is_the_frequency_alone(installation):
+    installation.replay(["*#22*5#2#1*5*1*8830##"])
+    asyncio.run(installation.entity(7, 1).async_turn_on())
+
+    assert installation.entity(7, 1).media_title == "88.3 MHz"
+    assert installation.entity(7, 1).media_channel is None
+
+
+def test_the_rds_name_of_an_amplifier_that_is_off_is_still_published(installation):
+    """Tuner scoped, like the frequency and the preset: one box, one name."""
+    installation.replay(["*#22*5#2#1*5*1*8830##", RDS_SKYROCK])
+
+    assert installation.entity(7, 1).state != PLAYING
+    assert installation.entity(7, 1).extra_state_attributes["rds_name"] == "SKYROCK"
+    assert installation.entity(7, 1).media_title is None
+
+
+def test_the_rds_stream_is_started_once_per_source(installation):
+    """Every entity reading a source claims the same flag, so one frame goes out."""
+    for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values()):
+        asyncio.run(_entity.async_update())
+
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+def test_each_source_gets_its_own_rds_stream():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+
+    for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values()):
+        asyncio.run(_entity.async_update())
+
+    assert sorted(installation.handler.sent) == ["*22*31*2#1##", "*22*31*2#2##"]
+
+
+def test_a_reconnection_starts_the_rds_stream_again(installation):
+    """The tuner was left alone while we were not listening; so was its stream."""
+    asyncio.run(installation.entity(7, 1).async_update())
+    installation.handler.sent.clear()
+    installation.handler._set_connected(False)
+
+    asyncio.run(installation.handler.reconnected())
+
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+def test_the_rds_stream_is_started_after_the_tuning_was_asked_for(installation):
+    """The request first: it is answered at once, the RDS name whenever."""
+    asyncio.run(installation.tuner_entity("frequency").async_update())
+
+    assert installation.handler.status_requests == ["*#22*5#2#1*11##"]
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+# --------------------------------------------------------------------------- #
 # The tuner device: one `number` and four `button` entities
 # --------------------------------------------------------------------------- #
 
@@ -1504,11 +1757,229 @@ def test_a_reconnection_asks_the_tuner_once_for_every_entity_reading_it(installa
     assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
 
 
+# --------------------------------------------------------------------------- #
+# The station `select` of the tuner device
+# --------------------------------------------------------------------------- #
+
+
+def test_the_station_select_belongs_to_the_tuner_device(installation):
+    _station = installation.tuner_entity("station")
+    _frequency = installation.tuner_entity("frequency")
+
+    assert _station._attr_device_info["identifiers"] == _frequency._attr_device_info["identifiers"]
+    # `has_entity_name`: "Tuner FM" + "Station" gives `select.tuner_fm_station`.
+    assert _station._attr_name == "Station"
+    assert _station._attr_unique_id == f"{MAC}-22-2#1-station"
+    assert _station._attr_icon == "mdi:playlist-music"
+    assert _station._attr_should_poll is False
+
+
+def test_the_select_platform_sets_up_the_tuner_of_the_gateway(installation):
+    """The path Home Assistant takes: forward the platform, get the entities.
+
+    Nothing else exercises `select.async_setup_entry` — the fixture builds its
+    entities by hand — and a wrong keyword there is a `TypeError` at startup.
+    """
+    _added = []
+
+    asyncio.run(select.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert [_entity._attr_unique_id for _entity in _added] == [f"{MAC}-22-2#1-station"]
+    assert [_entity._attr_device_info["name"] for _entity in _added] == ["Tuner FM"]
+
+
+def test_the_select_platform_sets_up_one_entity_per_source():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    _added = []
+
+    asyncio.run(select.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert sorted(_entity._attr_unique_id for _entity in _added) == [f"{MAC}-22-2#1-station", f"{MAC}-22-2#2-station"]
+
+
+def test_the_select_platform_of_a_gateway_without_a_tuner_adds_nothing(installation):
+    del installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["select"]
+    _added = []
+
+    asyncio.run(select.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert _added == []
+
+
+def test_the_select_platform_forgets_its_devices_on_unload(installation):
+    asyncio.run(select.async_unload_entry(installation, types.SimpleNamespace(data={"mac": MAC})))
+
+    assert installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["select"] == {}
+    # The tuner is a device dict per platform: the number keeps its own.
+    assert installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]["number"] != {}
+
+
+def test_the_number_platform_sets_up_the_tuner_of_the_gateway(installation):
+    _added = []
+
+    asyncio.run(number.async_setup_entry(installation, types.SimpleNamespace(data={"mac": MAC}), _added.extend))
+
+    assert [_entity._attr_unique_id for _entity in _added] == [f"{MAC}-22-2#1-frequency"]
+
+
+def test_the_station_options_are_the_source_list_of_the_amplifiers(installation):
+    assert installation.tuner_entity("station").options == installation.entity(7, 1).source_list
+
+
+def test_the_station_options_follow_the_gateway_station_table():
+    installation = Installation(radio_stations={"106.0": "SUD RADIO", "97.3": "NOSTALGIE"})
+
+    assert installation.tuner_entity("station").options == ["NOSTALGIE", "SUD RADIO"]
+
+
+def test_the_selected_station_is_the_one_the_tuner_is_on(installation):
+    _station = installation.tuner_entity("station")
+    assert _station.current_option is None
+
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+
+    assert _station.current_option == "SUD RADIO"
+    assert _station.state == "SUD RADIO"
+
+
+def test_the_selected_station_tolerates_the_half_step_of_the_band(installation):
+    """±0.05 MHz, as `station_name` matches: 105.95 is still 106.0."""
+    installation.replay(["*#22*5#2#1*5*1*10595##"])
+
+    assert installation.tuner_entity("station").current_option == "SUD RADIO"
+
+
+def test_a_frequency_the_table_does_not_carry_selects_nothing(installation):
+    """A tuner between two stations has nothing to select, and says so."""
+    installation.replay(["*#22*5#2#1*5*1*8830##"])
+
+    assert installation.tuner_entity("station").current_option is None
+    assert installation.tuner_entity("station").state is None
+
+
+def test_selecting_a_station_on_the_select_writes_the_scratch_preset(installation):
+    asyncio.run(installation.tuner_entity("station").async_select_option("FRANCE CULTURE"))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*9770*14##"]
+
+
+def test_the_select_and_the_amplifier_send_the_very_same_frame(installation):
+    asyncio.run(installation.tuner_entity("station").async_select_option("FRANCE CULTURE"))
+    _from_the_select = list(installation.handler.sent)
+    installation.handler.sent.clear()
+
+    asyncio.run(installation.entity(7, 1).async_select_source("FRANCE CULTURE"))
+
+    assert installation.handler.sent == _from_the_select
+
+
+def test_selecting_a_station_on_the_select_is_reflected_before_the_bus_answers(installation):
+    _station = installation.tuner_entity("station")
+    _station.written_states = 0
+
+    asyncio.run(_station.async_select_option("FRANCE CULTURE"))
+
+    assert _station.current_option == "FRANCE CULTURE"
+    assert _station.written_states == 1
+    assert installation.tuner[1] == {"modulation": 1, "frequency": 9770, "station": 15}
+
+
+def test_selecting_a_station_on_the_select_refreshes_the_amplifiers_too(installation):
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.tuner_entity("station").async_select_option("NOSTALGIE"))
+
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "NOSTALGIE"
+
+
+def test_selecting_a_station_the_table_does_not_carry_is_refused_on_the_select(installation):
+    with pytest.raises(ha_stubs.ServiceValidationError):
+        asyncio.run(installation.tuner_entity("station").async_select_option("RADIO NULLE PART"))
+
+    assert installation.handler.sent == []
+
+
+def test_the_select_addresses_its_own_source():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=2)
+
+    asyncio.run(installation.tuner_entity("station", source=2).async_select_option("FRANCE CULTURE"))
+
+    assert installation.handler.sent == ["*#22*5#2#2*#11*1*9770*14##"]
+
+
+def test_the_select_shows_what_the_tuner_is_on(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK])
+
+    assert installation.tuner_entity("station").extra_state_attributes == {
+        "frequency_mhz": 102.8,
+        "preset": 2,
+        "rds_name": "SKYROCK",
+    }
+
+
+def test_the_select_of_a_tuner_that_never_answered_shows_nothing(installation):
+    assert installation.tuner_entity("station").extra_state_attributes == {}
+
+
+def test_a_tuner_event_writes_the_select(installation):
+    _station = installation.tuner_entity("station")
+    _station.written_states = 0
+
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _station.written_states == 1
+
+    # Nothing moved, so nothing is written.
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _station.written_states == 1
+
+
+def test_a_tuner_event_of_another_source_leaves_the_select_alone():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    _first = installation.tuner_entity("station", source=1)
+    _second = installation.tuner_entity("station", source=2)
+    _first.written_states = 0
+    _second.written_states = 0
+
+    installation.replay(["*#22*5#2#2*11*1*9730*15##"])
+
+    assert _first.written_states == 0
+    assert _second.written_states == 1
+    assert _first.current_option is None
+    assert _second.current_option == "NOSTALGIE"
+
+
+def test_the_select_asks_the_tuner_when_nothing_else_did(installation):
+    asyncio.run(installation.tuner_entity("station").async_update())
+
+    assert installation.handler.status_requests == ["*#22*5#2#1*11##"]
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+def test_the_select_does_not_ask_again_after_an_amplifier_did(installation):
+    asyncio.run(installation.entity(7, 1).async_update())
+    _booted = len(installation.handler.status_requests)
+
+    asyncio.run(installation.tuner_entity("station").async_update())
+
+    assert installation.handler.status_requests[_booted:] == []
+
+
+def test_the_select_is_there_whatever_the_amplifiers_are_doing(installation):
+    """It drives the tuner, so it has nothing to do with a speaker being on."""
+    installation.replay(CAPTURE)
+
+    assert all(_entity.state != PLAYING for _entity in installation.entities.values() if _entity is not installation.entity(2, 2))
+    assert installation.tuner_entity("station").current_option == "SUD RADIO"
+    assert installation.tuner_entity("station").available is True
+
+
 def test_the_registry_prune_rebuilds_the_unique_id_of_every_entity(installation):
     """`__init__.py` extrapolates unique ids out of `hass.data` when it prunes.
 
     An entity whose id it cannot rebuild is removed from the registry on every
-    restart, and comes back with a `_2` suffix. The five entities of a tuner
+    restart, and comes back with a `_2` suffix. The six entities of a tuner
     device therefore have to sit under keys of their own.
     """
     _platforms = installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]

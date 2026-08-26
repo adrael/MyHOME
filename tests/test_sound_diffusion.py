@@ -197,6 +197,30 @@ def test_parse_source_station():
     assert sd.parse_sound_diffusion("*#22*5#2#1*6*15##") == sd.SourceStation(source=1, station=15)
 
 
+def test_parse_source_rds():
+    """The 8 characters of an RDS name, as the tuner sent them on 2026-08-26."""
+    assert sd.parse_sound_diffusion("*#22*5#2#1*10*83*75*89*82*79*67*75*32##") == sd.SourceRds(source=1, text="SKYROCK")
+    assert sd.parse_sound_diffusion("*#22*2#1*10*70*79*82*69*86*69*82*32##") == sd.SourceRds(source=1, text="FOREVER")
+
+
+def test_parse_source_rds_keeps_the_spaces_inside_a_name():
+    assert sd.parse_sound_diffusion("*#22*5#2#1*10*77*32*82*65*68*73*79*32##") == sd.SourceRds(source=1, text="M RADIO")
+
+
+def test_parse_source_rds_of_a_tuner_with_nothing_to_say():
+    """Eight spaces: the tuner is tuned but no RDS text has reached it yet."""
+    assert sd.parse_sound_diffusion("*#22*5#2#1*10*32*32*32*32*32*32*32*32##") == sd.SourceRds(source=1, text="")
+
+
+def test_parse_source_rds_takes_any_number_of_characters():
+    """`*10*VAL1*VAL2*VALn##` in the spec; eight of them on this hardware."""
+    assert sd.parse_sound_diffusion("*#22*5#2#1*10*70*73*80##") == sd.SourceRds(source=1, text="FIP")
+
+
+def test_parse_source_rds_drops_what_is_not_printable():
+    assert sd.parse_sound_diffusion("*#22*5#2#1*10*70*0*73*80##") == sd.SourceRds(source=1, text="FIP")
+
+
 def test_parse_source_state():
     assert sd.parse_sound_diffusion("*#22*5#2#1*12*1*4##") == sd.SourceState(source=1, is_on=True, mmtype=4)
     assert sd.parse_sound_diffusion("*#22*2#1*12*0*10##") == sd.SourceState(source=1, is_on=False, mmtype=10)
@@ -214,7 +238,7 @@ def test_parse_capture_sequence_presets():
 
 def test_the_dispatched_source_events_are_the_ones_that_feed_the_store():
     """The others are parsed for the log: they carry nothing an amplifier reads."""
-    assert sd.SOURCE_EVENTS == (sd.SourceFrequency, sd.SourceFrequencyStation, sd.SourceStation)
+    assert sd.SOURCE_EVENTS == (sd.SourceFrequency, sd.SourceFrequencyStation, sd.SourceStation, sd.SourceRds)
 
 
 # --------------------------------------------------------------------------- #
@@ -342,6 +366,13 @@ def test_frequency_seek():
 
 def test_store_station():
     assert sd.store_station(1, 14) == "*22*33#14*2#1##"
+
+
+def test_rds_start_stop_address_the_source_as_a_where():
+    """Not the spec form: `*22*31#<source>##` is refused by the gateway (NACK)."""
+    assert sd.rds_start(1) == "*22*31*2#1##"
+    assert sd.rds_start(3) == "*22*31*2#3##"
+    assert sd.rds_stop(1) == "*22*32*2#1##"
 
 
 def test_set_frequency():

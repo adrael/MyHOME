@@ -16,14 +16,11 @@ from homeassistant.const import (
     CONF_MAC,
 )
 
-from OWNd.message import OWNCommand
-
 from .const import (
     CONF_ENTITY,
     CONF_PLATFORMS,
     CONF_SOURCE,
     CONF_TUNER_REQUESTED,
-    CONF_TUNING_PRESET,
     CONF_WHO,
     CONF_WHERE,
     CONF_MANUFACTURER,
@@ -32,17 +29,15 @@ from .const import (
     LOGGER,
 )
 from .sound_diffusion import (
-    DEFAULT_TUNING_PRESET,
     FREQUENCY_STEP,
     MAX_FREQUENCY,
     MIN_FREQUENCY,
     MODULATION_FM,
     SOURCE_EVENTS,
     SourceFrequencyStation,
-    request_source_frequency_station,
     set_frequency,
 )
-from .tuner import MyHOMETunerEntity
+from .tuner import MyHOMETunerEntity, request_tuning
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -129,12 +124,8 @@ class MyHOMETunerFrequency(MyHOMETunerEntity, NumberEntity):
 
     @property
     def _tuning_preset(self) -> int:
-        """Preset a write overwrites, the `tuning_preset` of the gateway.
-
-        Read with a default rather than with `or`: a preset of 0 means nothing
-        at all and must not be quietly read as 15.
-        """
-        return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_TUNING_PRESET, DEFAULT_TUNING_PRESET)
+        """Preset a write overwrites, the `tuning_preset` of the gateway."""
+        return self._tuner_state.tuning_preset
 
     # -------------------------------------------------------------- commands #
 
@@ -149,7 +140,7 @@ class MyHOMETunerFrequency(MyHOMETunerEntity, NumberEntity):
             return
         _tuner[CONF_TUNER_REQUESTED] = True
 
-        await self._gateway_handler.send_status_request(OWNCommand(request_source_frequency_station(self._source)))
+        await request_tuning(self._gateway_handler, self._source)
 
     async def async_set_native_value(self, value: float) -> None:
         """Retune the source, spending the scratch preset.

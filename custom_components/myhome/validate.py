@@ -32,6 +32,7 @@ from homeassistant.components.sensor import (
 from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.components.number import DOMAIN as NUMBER
+from homeassistant.components.select import DOMAIN as SELECT
 from homeassistant.const import CONF_NAME, CONF_MAC
 
 from .sound_diffusion import DEFAULT_TUNING_PRESET, MAX_STATION_PRESET, tuner_device_id
@@ -287,13 +288,13 @@ def _add_tuner_devices(platforms: dict) -> None:
 
     Nothing declares a tuner in the configuration file: it is the box behind the
     amplifiers, and the `source` option of each of them names it. So the devices
-    are built here, which is also what gets `number` and `button` into
+    are built here, which is also what gets `number`, `button` and `select` into
     `CONF_PLATFORMS` — the keys `__init__.py` forwards to
     `async_forward_entry_setups` and unloads again.
 
-    A device per platform rather than one shared between the two: `button.py`
-    deletes its own on unload, and it must not empty the `number` platform on
-    its way out.
+    A device dict per platform rather than one shared between the three:
+    `button.py` deletes its own on unload, and it must not empty the `number`
+    platform on its way out.
     """
     if MEDIA_PLAYER not in platforms:
         return
@@ -301,12 +302,13 @@ def _add_tuner_devices(platforms: dict) -> None:
     _sources = sorted({_amplifier[CONF_SOURCE] for _amplifier in platforms[MEDIA_PLAYER].values()})
     platforms.setdefault(NUMBER, {})
     platforms.setdefault(BUTTON, {})
+    platforms.setdefault(SELECT, {})
 
     for _source in _sources:
         # One source is the common case, and "Tuner FM" reads better than
         # "Tuner FM 1" in front of the single tuner of a house.
         _name = "Tuner FM" if len(_sources) == 1 else f"Tuner FM {_source}"
-        for _platform in (NUMBER, BUTTON):
+        for _platform in (NUMBER, BUTTON, SELECT):
             platforms[_platform][tuner_device_id(_source)] = {
                 CONF_WHO: "22",
                 CONF_WHERE: f"2#{_source}",

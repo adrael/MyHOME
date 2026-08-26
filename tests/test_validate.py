@@ -156,8 +156,9 @@ def test_radio_stations_are_stored_beside_the_platforms_not_among_them():
     )
     mac = list(result)[0]
     assert const.CONF_RADIO_STATIONS not in result[mac][const.CONF_PLATFORMS]
-    # `number` and `button` are the tuner the amplifier listens to, derived.
-    assert list(result[mac][const.CONF_PLATFORMS]) == ["media_player", "number", "button"]
+    # `number`, `button` and `select` are the tuner the amplifier listens to,
+    # derived out of it.
+    assert list(result[mac][const.CONF_PLATFORMS]) == ["media_player", "number", "button", "select"]
     assert result[mac][const.CONF_RADIO_STATIONS] == {10600: "SUD RADIO"}
 
 
@@ -210,7 +211,7 @@ def test_tuning_preset_is_stored_beside_the_platforms_not_among_them():
     result = _gateway(tuning_preset=3)
 
     assert const.CONF_TUNING_PRESET not in result[const.CONF_PLATFORMS]
-    assert list(result[const.CONF_PLATFORMS]) == ["media_player", "number", "button"]
+    assert list(result[const.CONF_PLATFORMS]) == ["media_player", "number", "button", "select"]
 
 
 def test_a_gateway_without_amplifiers_gets_no_extra_platform():
@@ -260,20 +261,23 @@ def test_one_tuner_device_per_distinct_source_however_many_amplifiers():
     assert [_platforms["number"][_device]["name"] for _device in sorted(_platforms["number"])] == ["Tuner FM 1", "Tuner FM 2"]
 
 
-def test_the_tuner_is_declared_on_both_platforms_it_spreads_over():
+def test_the_tuner_is_declared_on_every_platform_it_spreads_over():
     _platforms = _amplifiers(kitchen=1)
 
     assert "22-2#1" in _platforms["number"]
     assert "22-2#1" in _platforms["button"]
+    assert "22-2#1" in _platforms["select"]
     # A device dict of its own per platform: `button.py` deletes its own on
     # unload, and must not empty the `number` platform on its way out.
     assert _platforms["number"]["22-2#1"] is not _platforms["button"]["22-2#1"]
+    assert _platforms["number"]["22-2#1"] is not _platforms["select"]["22-2#1"]
 
 
 def test_a_gateway_without_amplifiers_gets_no_tuner_platform():
     _platforms = validate.config_schema({"house": {"mac": MAC, "light": {"lamp": {"where": "12", "name": "Lamp"}}}})[MAC][const.CONF_PLATFORMS]
 
     assert "number" not in _platforms
+    assert "select" not in _platforms
     # `button` is there, but for the lock buttons of the light.
     assert all(_device[const.CONF_WHO] != "22" for _device in _platforms["button"].values())
 
@@ -367,10 +371,12 @@ def _dashboard_cards():
     return [_card for _section in _dashboard_view()["sections"] for _card in _section["cards"]]
 
 
-#: The five entities of the tuner device, as `validate.py` and `tuner.py` name
-#: them once Home Assistant has slugified "Tuner FM" + the entity name.
+#: The six entities of the tuner device, as `validate.py`, `tuner.py` and the
+#: two platforms name them once Home Assistant has slugified "Tuner FM" plus the
+#: entity name.
 TUNER_ENTITIES = [
     "number.tuner_fm_frequency",
+    "select.tuner_fm_station",
     "button.tuner_fm_seek_up",
     "button.tuner_fm_seek_down",
     "button.tuner_fm_next_preset",
@@ -394,7 +400,8 @@ def test_the_documented_tuner_entity_ids_are_the_ones_the_code_produces():
         return platform + "." + re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", f"{_device_name} {entity_name}".lower())).strip("_")
 
     assert _slug("number", "Frequency") == "number.tuner_fm_frequency"
-    assert [_slug("button", _name) for _key, _name, *_ in tuner.TUNER_BUTTONS] == TUNER_ENTITIES[1:]
+    assert _slug("select", "Station") == "select.tuner_fm_station"
+    assert [_slug("button", _name) for _key, _name, *_ in tuner.TUNER_BUTTONS] == TUNER_ENTITIES[2:]
 
 
 def test_the_readme_documents_every_tuner_entity():
@@ -413,13 +420,17 @@ def test_the_dashboard_addresses_exactly_the_amplifiers_of_the_readme():
     assert set(_entity for _entity in _referenced if _entity.startswith("media_player.")) == set(_expected)
 
 
-def test_the_dashboard_carries_the_five_tuner_entities():
-    """One tuner, one section: the frequency and the four buttons, nothing twice."""
+def test_the_dashboard_carries_every_tuner_entity():
+    """One tuner, one section: station, frequency and buttons, nothing twice."""
     _referenced = _referenced_entities(_dashboard_view())
     _tuner = [_entity for _entity in _referenced if not _entity.startswith("media_player.")]
 
     assert sorted(_tuner) == sorted(TUNER_ENTITIES)
     assert len(_tuner) == len(set(_tuner)), "a station control repeated is a station moved twice"
+
+
+def test_the_dashboard_drives_the_station_with_a_dropdown():
+    assert _dashboard_features("select.tuner_fm_station") == [{"type": "select-options"}]
 
 
 def test_the_dashboard_drives_the_frequency_with_a_slider():
