@@ -17,11 +17,12 @@
 # "Radio Cuisine" gives `media_player.radio_cuisine`.
 #
 # One tuner is shared by every amplifier, so it is shown once, at the top, as
-# its own device: three attribute rows saying what it plays, its frequency as a
-# slider, and its four buttons. Nothing in that section addresses an amplifier,
-# which is why none of it can be pointed at a group by mistake. The tuner
-# attributes are published whether an amplifier is playing or not, so those rows
-# stay readable with the whole house switched off.
+# its own device: two attribute rows saying what it plays, its station as a
+# dropdown, its frequency as a slider, and its four buttons. Only the attribute
+# rows read an amplifier, and only to display; every control of that section
+# addresses the tuner itself, which is why none of it can be pointed at a group
+# by mistake. The tuner attributes are published whether an amplifier is playing
+# or not, so those rows stay readable with the whole house switched off.
 #
 # One tile per amplifier:
 #   tap on the icon   -> toggles that amplifier (`media_player.toggle`)
@@ -54,11 +55,6 @@ views:
             entities:
               - type: attribute
                 entity: media_player.radio_cuisine
-                attribute: station_name
-                name: Station
-                icon: mdi:playlist-music
-              - type: attribute
-                entity: media_player.radio_cuisine
                 attribute: frequency_mhz
                 name: Frequency
                 suffix: " MHz"
@@ -68,6 +64,17 @@ views:
                 attribute: preset
                 name: Preset
                 icon: mdi:numeric
+          # The station, on the tuner rather than on a speaker: the same list
+          # and the same frame as the Source menu of an amplifier, in the one
+          # place that cannot be pointed at a group by mistake. On a Home
+          # Assistant too old for the `select-options` tile feature, drop the
+          # feature and pick the station from the tile's more-info dialog.
+          - type: tile
+            entity: select.tuner_fm_station
+            name: Station
+            icon: mdi:playlist-music
+            features:
+              - type: select-options
           # The tuner's own frequency, in MHz. Dragging it retunes the box, and
           # spends the `tuning_preset` slot doing so — see the README.
           - type: tile

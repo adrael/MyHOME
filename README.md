@@ -173,10 +173,11 @@ when it stops.
 
 The amplifiers are speakers. The box behind them — the one that holds the
 frequency and the fifteen presets — is a device of its own, **Tuner FM**, with
-five entities:
+six entities:
 
 | Entity | What it does | Frame |
 | ------ | ------------ | ----- |
+| `select.tuner_fm_station` | The station, picked by name out of the table. The same list and the same frame as an amplifier's Source menu | `*#22*5#2#<s>*#11*1*<freq>*<n>##` |
 | `number.tuner_fm_frequency` | The frequency in MHz, 87.5 to 108.0 in 0.05 steps. Reading it is what the tuner reports; setting it retunes | `*#22*5#2#<s>*#11*1*<freq>*<n>##` |
 | `button.tuner_fm_seek_up` | Scan upwards to the next station the tuner catches | `*22*5#*2#<s>##` |
 | `button.tuner_fm_seek_down` | Scan downwards | `*22*6#*2#<s>##` |
@@ -189,6 +190,26 @@ nothing is added to `myhome.yaml`. The source of each amplifier says which tuner
 it listens to, so a house whose amplifiers all sit on source 1 gets one device
 called *Tuner FM*; a bus with several gets *Tuner FM 1*, *Tuner FM 2*, … and one
 set of entities each (`number.tuner_fm_2_frequency`, and so on).
+
+`select.tuner_fm_station` is `media_player.select_source` on the box rather than
+on a speaker: the same station labels, the same scratch preset, the same frame.
+It is the one to drive from a dashboard or an automation — an installation whose
+amplifiers all listen to one tuner has ten Source menus doing the same thing, and
+one Station select saying so.
+
+```yaml
+action: select.select_option
+target:
+  entity_id: select.tuner_fm_station
+data:
+  option: FRANCE CULTURE
+```
+
+Its state is the station the tuner is on, matched to the table within 0.05 MHz,
+and *unknown* while the tuner sits on a frequency the table does not carry —
+after a seek, typically. It carries `frequency_mhz`, `preset` and `rds_name` as
+attributes, and it is available whenever the gateway is, whatever the amplifiers
+are doing.
 
 Setting the frequency is `media_player.select_source` without the station table:
 
@@ -213,8 +234,8 @@ attribute straight away and it stays away until the tuner sits on a slot again
 integration losing count.
 
 The entities follow the gateway connection like the amplifiers do, and they are
-tuner-scoped throughout: the frequency is what the shared box is on, whether a
-single amplifier is playing it or not.
+tuner-scoped throughout: the frequency and the station are what the shared box is
+on, whether a single amplifier is playing them or not.
 
 ### Attributes
 

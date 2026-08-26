@@ -32,6 +32,7 @@ _PLATFORMS = [
     "climate",
     "media_player",
     "number",
+    "select",
 ]
 
 
@@ -122,6 +123,27 @@ class NumberEntity(Entity):
     @property
     def device_class(self):
         return self._attr_device_class
+
+
+class SelectEntity(Entity):
+    """Stand-in exposing the `_attr_*` fallbacks the real class provides."""
+
+    _attr_options = []
+    _attr_current_option = None
+
+    @property
+    def options(self):
+        return self._attr_options
+
+    @property
+    def current_option(self):
+        return self._attr_current_option
+
+    @property
+    def state(self):
+        """`None` for an option that is not on the list, as the real class does."""
+        _current = self.current_option
+        return _current if _current in self.options else None
 
 
 class _StringEnumMeta(type):
@@ -277,6 +299,7 @@ def install():
     _number = sys.modules["homeassistant.components.number"]
     _number.NumberEntity = NumberEntity
     _number.NumberMode = NumberMode
+    sys.modules["homeassistant.components.select"].SelectEntity = SelectEntity
 
 
 def load(name):

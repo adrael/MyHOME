@@ -29,6 +29,7 @@ from homeassistant.components.sensor import (
 from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
 from homeassistant.components.number import DOMAIN as NUMBER
+from homeassistant.components.select import DOMAIN as SELECT
 
 from OWNd.connection import OWNSession, OWNEventSession, OWNCommandSession, OWNGateway
 from OWNd.message import (
@@ -453,9 +454,9 @@ class MyHOMEGatewayHandler:
     def _tuner_devices(self, platform: str):
         """Every device of `platform` that is a sound diffusion tuner.
 
-        `validate.py` derives one per source under both `number` and `button`,
-        and the `button` platform also holds the lock buttons of the lights,
-        switches and covers — which have nothing to do with WHO=22.
+        `validate.py` derives one per source under `number`, `button` and
+        `select`, and the `button` platform also holds the lock buttons of the
+        lights, switches and covers — which have nothing to do with WHO=22.
         """
         _gateway_data = self.hass.data.get(DOMAIN, {}).get(self.mac)
         if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
@@ -468,9 +469,9 @@ class MyHOMEGatewayHandler:
         """Every sound diffusion entity of this gateway that hass already knows.
 
         The amplifiers of the `media_player` platform and the entities of the
-        tuner devices, spread over `number` and `button`. Those platforms are
-        walked and no other: `available` elsewhere does not follow the
-        connection, and writing those entities would change their behaviour.
+        tuner devices, spread over `number`, `button` and `select`. Those
+        platforms are walked and no other: `available` elsewhere does not follow
+        the connection, and writing those entities would change their behaviour.
 
         The amplifiers come first, so that the one status request a source is
         worth is claimed by an amplifier when a gateway has both.
@@ -479,7 +480,7 @@ class MyHOMEGatewayHandler:
         if not _gateway_data or CONF_PLATFORMS not in _gateway_data:
             return
         _devices = list(_gateway_data[CONF_PLATFORMS].get(MEDIA_PLAYER, {}).values())
-        _devices += list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(BUTTON))
+        _devices += list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(BUTTON)) + list(self._tuner_devices(SELECT))
         for _device in _devices:
             for _entity in _device[CONF_ENTITIES].values():
                 # `hass` is set when the entity is added to a platform; writing
@@ -569,7 +570,7 @@ class MyHOMEGatewayHandler:
             # configured one until a WHAT 35 command moves it, and only the
             # entity knows that. It drops the events of the other sources.
             # The tuner devices read the store too, and drop them the same way.
-            _devices = list(_configured_amplifiers.values()) + list(self._tuner_devices(NUMBER))
+            _devices = list(_configured_amplifiers.values()) + list(self._tuner_devices(NUMBER)) + list(self._tuner_devices(SELECT))
         elif isinstance(_event, BROADCAST_EVENTS):
             # Compared as numbers: `3#1#1` belongs to area 1, not to area 11.
             _devices = [_device for _device in _configured_amplifiers.values() if int(_device[CONF_WHERE].split("#")[1]) == _event.area]

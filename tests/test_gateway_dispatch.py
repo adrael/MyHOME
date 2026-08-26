@@ -22,6 +22,7 @@ validate = ha_stubs.load("validate")
 gateway = ha_stubs.load("gateway")
 media_player = ha_stubs.load("media_player")
 number = ha_stubs.load("number")
+select = ha_stubs.load("select")
 tuner = ha_stubs.load("tuner")
 
 DOMAIN = const.DOMAIN
@@ -158,6 +159,21 @@ class Installation:
             self._add_tuner_entity(
                 _device,
                 number.MyHOMETunerFrequency(
+                    hass=self,
+                    device_id=_device_id,
+                    who=_device[const.CONF_WHO],
+                    where=_device[const.CONF_WHERE],
+                    name=_device["name"],
+                    source=_device[const.CONF_SOURCE],
+                    manufacturer=_device[const.CONF_MANUFACTURER],
+                    model=_device[const.CONF_DEVICE_MODEL],
+                    gateway=self.handler,
+                ),
+            )
+        for _device_id, _device in _platforms.get("select", {}).items():
+            self._add_tuner_entity(
+                _device,
+                select.MyHOMETunerStation(
                     hass=self,
                     device_id=_device_id,
                     who=_device[const.CONF_WHO],
@@ -1656,11 +1672,181 @@ def test_a_reconnection_asks_the_tuner_once_for_every_entity_reading_it(installa
     assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
 
 
+# --------------------------------------------------------------------------- #
+# The station `select` of the tuner device
+# --------------------------------------------------------------------------- #
+
+
+def test_the_station_select_belongs_to_the_tuner_device(installation):
+    _station = installation.tuner_entity("station")
+    _frequency = installation.tuner_entity("frequency")
+
+    assert _station._attr_device_info["identifiers"] == _frequency._attr_device_info["identifiers"]
+    # `has_entity_name`: "Tuner FM" + "Station" gives `select.tuner_fm_station`.
+    assert _station._attr_name == "Station"
+    assert _station._attr_unique_id == f"{MAC}-22-2#1-station"
+    assert _station._attr_icon == "mdi:playlist-music"
+    assert _station._attr_should_poll is False
+
+
+def test_the_station_options_are_the_source_list_of_the_amplifiers(installation):
+    assert installation.tuner_entity("station").options == installation.entity(7, 1).source_list
+
+
+def test_the_station_options_follow_the_gateway_station_table():
+    installation = Installation(radio_stations={"106.0": "SUD RADIO", "97.3": "NOSTALGIE"})
+
+    assert installation.tuner_entity("station").options == ["NOSTALGIE", "SUD RADIO"]
+
+
+def test_the_selected_station_is_the_one_the_tuner_is_on(installation):
+    _station = installation.tuner_entity("station")
+    assert _station.current_option is None
+
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+
+    assert _station.current_option == "SUD RADIO"
+    assert _station.state == "SUD RADIO"
+
+
+def test_the_selected_station_tolerates_the_half_step_of_the_band(installation):
+    """±0.05 MHz, as `station_name` matches: 105.95 is still 106.0."""
+    installation.replay(["*#22*5#2#1*5*1*10595##"])
+
+    assert installation.tuner_entity("station").current_option == "SUD RADIO"
+
+
+def test_a_frequency_the_table_does_not_carry_selects_nothing(installation):
+    """A tuner between two stations has nothing to select, and says so."""
+    installation.replay(["*#22*5#2#1*5*1*8830##"])
+
+    assert installation.tuner_entity("station").current_option is None
+    assert installation.tuner_entity("station").state is None
+
+
+def test_selecting_a_station_on_the_select_writes_the_scratch_preset(installation):
+    asyncio.run(installation.tuner_entity("station").async_select_option("FRANCE CULTURE"))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*9770*14##"]
+
+
+def test_the_select_and_the_amplifier_send_the_very_same_frame(installation):
+    asyncio.run(installation.tuner_entity("station").async_select_option("FRANCE CULTURE"))
+    _from_the_select = list(installation.handler.sent)
+    installation.handler.sent.clear()
+
+    asyncio.run(installation.entity(7, 1).async_select_source("FRANCE CULTURE"))
+
+    assert installation.handler.sent == _from_the_select
+
+
+def test_selecting_a_station_on_the_select_is_reflected_before_the_bus_answers(installation):
+    _station = installation.tuner_entity("station")
+    _station.written_states = 0
+
+    asyncio.run(_station.async_select_option("FRANCE CULTURE"))
+
+    assert _station.current_option == "FRANCE CULTURE"
+    assert _station.written_states == 1
+    assert installation.tuner[1] == {"modulation": 1, "frequency": 9770, "station": 15}
+
+
+def test_selecting_a_station_on_the_select_refreshes_the_amplifiers_too(installation):
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.tuner_entity("station").async_select_option("NOSTALGIE"))
+
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "NOSTALGIE"
+
+
+def test_selecting_a_station_the_table_does_not_carry_is_refused_on_the_select(installation):
+    with pytest.raises(ha_stubs.ServiceValidationError):
+        asyncio.run(installation.tuner_entity("station").async_select_option("RADIO NULLE PART"))
+
+    assert installation.handler.sent == []
+
+
+def test_the_select_addresses_its_own_source():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=2)
+
+    asyncio.run(installation.tuner_entity("station", source=2).async_select_option("FRANCE CULTURE"))
+
+    assert installation.handler.sent == ["*#22*5#2#2*#11*1*9770*14##"]
+
+
+def test_the_select_shows_what_the_tuner_is_on(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK])
+
+    assert installation.tuner_entity("station").extra_state_attributes == {
+        "frequency_mhz": 102.8,
+        "preset": 2,
+        "rds_name": "SKYROCK",
+    }
+
+
+def test_the_select_of_a_tuner_that_never_answered_shows_nothing(installation):
+    assert installation.tuner_entity("station").extra_state_attributes == {}
+
+
+def test_a_tuner_event_writes_the_select(installation):
+    _station = installation.tuner_entity("station")
+    _station.written_states = 0
+
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _station.written_states == 1
+
+    # Nothing moved, so nothing is written.
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+    assert _station.written_states == 1
+
+
+def test_a_tuner_event_of_another_source_leaves_the_select_alone():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    _first = installation.tuner_entity("station", source=1)
+    _second = installation.tuner_entity("station", source=2)
+    _first.written_states = 0
+    _second.written_states = 0
+
+    installation.replay(["*#22*5#2#2*11*1*9730*15##"])
+
+    assert _first.written_states == 0
+    assert _second.written_states == 1
+    assert _first.current_option is None
+    assert _second.current_option == "NOSTALGIE"
+
+
+def test_the_select_asks_the_tuner_when_nothing_else_did(installation):
+    asyncio.run(installation.tuner_entity("station").async_update())
+
+    assert installation.handler.status_requests == ["*#22*5#2#1*11##"]
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+def test_the_select_does_not_ask_again_after_an_amplifier_did(installation):
+    asyncio.run(installation.entity(7, 1).async_update())
+    _booted = len(installation.handler.status_requests)
+
+    asyncio.run(installation.tuner_entity("station").async_update())
+
+    assert installation.handler.status_requests[_booted:] == []
+
+
+def test_the_select_is_there_whatever_the_amplifiers_are_doing(installation):
+    """It drives the tuner, so it has nothing to do with a speaker being on."""
+    installation.replay(CAPTURE)
+
+    assert all(_entity.state != PLAYING for _entity in installation.entities.values() if _entity is not installation.entity(2, 2))
+    assert installation.tuner_entity("station").current_option == "SUD RADIO"
+    assert installation.tuner_entity("station").available is True
+
+
 def test_the_registry_prune_rebuilds_the_unique_id_of_every_entity(installation):
     """`__init__.py` extrapolates unique ids out of `hass.data` when it prunes.
 
     An entity whose id it cannot rebuild is removed from the registry on every
-    restart, and comes back with a `_2` suffix. The five entities of a tuner
+    restart, and comes back with a `_2` suffix. The six entities of a tuner
     device therefore have to sit under keys of their own.
     """
     _platforms = installation.data[DOMAIN][MAC][const.CONF_PLATFORMS]
