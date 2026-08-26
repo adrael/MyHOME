@@ -4,8 +4,8 @@ Home Assistant is stubbed (see `ha_stubs`); everything else is the real code:
 `gateway.handle_video_door_entry`, the WHO=8 parser, `event.MyHOMEDoorbell` and
 `binary_sensor.MyHOMEVideoDoorEntryCall`.
 
-The frames are the capture of the villa this fork was written against (F454,
-entrance panel 20, indoor unit 21, gate strike on activation address 20).
+The frames are captured from a test installation (F454, entrance panel 20,
+indoor unit 21, gate strike on activation address 20).
 """
 
 import os
@@ -28,7 +28,7 @@ binary_sensor = ha_stubs.load("binary_sensor")
 DOMAIN = const.DOMAIN
 MAC = "00:03:50:11:22:33"
 
-# The villa's real call sequence, in the order the bus emitted it.
+# The real call sequence, in the order the bus emitted it.
 RING = "*8*1#1#4#21*4##"
 CALLER_ID = "*8*9#1#4*20##"
 AUTO_ON = "*8*1#5#4#20*10##"
@@ -44,7 +44,7 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.hass = hass
         self.is_connected = True
         self.generate_events = False
-        self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.1.17")
+        self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.0.10")
         self.sent = []
 
 

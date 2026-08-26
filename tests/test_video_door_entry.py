@@ -3,9 +3,9 @@
 Loaded straight from its path, like ``test_sound_diffusion.py``: the module
 under test must stay importable without Home Assistant and without OWNd.
 
-Every frame below is from the capture of the villa this fork was written
-against (F454, entrance panel 20, indoor unit 21, gate strike on activation
-address 20), and is the ground truth the parser is measured against.
+Every frame below is from a capture taken on a test installation (F454,
+entrance panel 20, indoor unit 21, gate strike on activation address 20), and
+is the ground truth the parser is measured against.
 """
 
 import importlib.util

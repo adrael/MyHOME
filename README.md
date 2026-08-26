@@ -592,7 +592,7 @@ video_door_entry:
     lock_address: 20             # gate-strike activation address, default = entrance_address
     camera_where: 4000           # 4000 + camera number, default 4000
     camera_password: "0123456789abcdef0123456789abcdef"   # in clear or MD5 of the OPEN bus password; omit to skip the camera
-    camera_host: 192.168.1.17    # optional, default = the gateway host
+    camera_host: 192.168.0.10    # optional, default = the gateway host
     verify_ssl: false            # the panel serves the snapshot with a self-signed cert
     call_timeout: 60             # seconds before the call sensor gives up on a missing session end
 ```
