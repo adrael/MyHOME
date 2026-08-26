@@ -36,9 +36,11 @@ Each amplifier becomes one `media_player` entity supporting on/off, volume set
 and volume step, next/previous station, and picking a station by name from the
 source list.
 
-The tuner behind them gets a device of its own, with a frequency you can set in
-MHz and four buttons — see [Tuner entities](#tuner-entities). Nothing to
-configure: it is derived from the amplifiers you already declared.
+The tuner behind them gets a device of its own — a station dropdown, a frequency
+in MHz and four buttons, see [Tuner entities](#tuner-entities). Nothing to
+configure: it is derived from the amplifiers you already declared. The name the
+station broadcasts over RDS is read too, and shown wherever the station table
+has nothing to say.
 
 The integration needs Home Assistant 2024.3 or later. The example dashboard
 needs 2025.1 or later (the `media-player-volume-slider` tile feature); the
@@ -237,14 +239,50 @@ The entities follow the gateway connection like the amplifiers do, and they are
 tuner-scoped throughout: the frequency and the station are what the shared box is
 on, whether a single amplifier is playing them or not.
 
+### RDS
+
+The tuner tells us what the station calls itself. **Verified on hardware**
+(2026-08-26): asked once per source with `*22*31*2#<s>##`, it answers
+`*#22*5#2#<s>*10*<c1>*…*<c8>##` — eight ASCII codes, the RDS *programme service*
+name — and keeps sending one per text it receives, station changes included. The
+request is repeated only after a reconnection; nothing polls it, and there is no
+reading it on demand: the dimension 10 *request* is refused by the gateway.
+
+It surfaces as the `rds_name` attribute of every amplifier of that source and of
+`select.tuner_fm_station`, and as the station name itself — `media_channel`,
+`station_name`, the second half of `media_title` — **wherever the station table
+carries nothing at that frequency**:
+
+| Frequency | Table | RDS | `media_title` |
+| --------- | ----- | --- | ------------- |
+| 97.7 | `FRANCE CULTURE` | anything | `97.7 MHz · FRANCE CULTURE` |
+| 88.3 | — | `SKYROCK` | `88.3 MHz · SKYROCK` |
+| 88.3 | — | — | `88.3 MHz` |
+
+The table wins because it is what you configured: it names a station the way the
+rest of your dashboard does, and a tuner sitting between two frequencies cannot
+make it drift. RDS covers what the table does not.
+
+`rds_name` is empty until the radio sends something — a tuner that has just been
+retuned sends eight spaces, which is held as no name at all — and it is dropped
+as soon as the frequency moves, the new one arriving a moment later. Like the
+frequency and the preset it describes the shared box, so it is published whether
+an amplifier is playing or not.
+
+Nothing stops the stream: `*22*32*2#<s>##` works (it answers `*25*0*0*0##`, a
+dimension neither the spec nor this integration knows anything about) but the
+integration never sends it. Eight characters now and then cost nothing, and the
+wall controls read the same tuner.
+
 ### Attributes
 
 Each amplifier exposes `area`, `point` and `source_id`, plus `raw_volume` (the
 bus' 0-31 value) once it is known. The tuner is one box shared by the whole
-installation, so `frequency_mhz`, `station_name` and `preset` are published as
-soon as they are known, **whether that amplifier is playing or not** — a
-dashboard can show the station with the whole house switched off. `modulation`
-is added only when it is not FM (2 long wave, 3 medium wave, 4 short wave).
+installation, so `frequency_mhz`, `station_name`, `rds_name` and `preset` are
+published as soon as they are known, **whether that amplifier is playing or
+not** — a dashboard can show the station with the whole house switched off.
+`modulation` is added only when it is not FM (2 long wave, 3 medium wave, 4 short
+wave).
 
 Attributes without a value are left out, so an amplifier of a gateway whose
 tuner never answered carries only its addressing.
@@ -344,6 +382,8 @@ the integration sends on the bus, and both forms of the commands that had two:
 | `*22*6#*2#<s>##` — seek down, automatic | same, plus `*#22*5#2#1*11*1*10680*15##` when the frequency falls back onto a stored preset |
 | `*#22*5#2#<s>*#11*<mod>*<freq>*<n>##` — retune | retunes at once (~250 ms) **and overwrites preset `n + 1`**: `*0` came back as `*11*1*8970*1##`, so preset 15 is written as `*14` |
 | `*22*35#4#<a>#<s>*3#<a>#<p>##` — on, on that source | on; two routing events follow |
+| `*22*31*2#<s>##` — start RDS | the tuner answers `*#22*5#2#<s>*10*<c1>*…*<c8>##` within ~350 ms, then one per RDS text it receives, station changes included |
+| `*22*32*2#<s>##` — stop RDS | answered `*#22*5#2#<s>*25*0*0*0##`; **dimension 25 is unknown** — it is in neither the spec nor this integration, and what it means is anyone's guess |
 | `*#22*3#<a>#<p>*12##`, `*#22*3#<a>#<p>*1##`, `*#22*5#2#<s>*11##` — requests | answered, **even with the amplifier off** |
 
 Two consequences worth knowing:
@@ -364,6 +404,13 @@ Two consequences worth knowing:
   frequency (dimension 5) and then its slot (dimension 11) about 20 ms later,
   which is why the frequency alone is not read as "the preset is gone". The band
   was driven from 87.7 to 107.3 MHz, every frequency accepted.
+
+The RDS commands are **not** in the form the specification gives them.
+`*22*31#<s>##` and `*22*32#<s>##` (§3.1.10 and §3.1.11, the source as a WHAT
+parameter) are refused by the gateway — NACK, no event — while the same WHATs
+addressed to the source as a WHERE, `*22*31*2#<s>##`, are accepted. Reading
+dimension 10 is refused in both forms (`*#22*5#2#1*10##` and `*#22*2#1*10##`), so
+the stream is the only way to that name.
 
 The four frames the tuner buttons send (`*22*5#`, `*22*6#`, `*22*9#`, `*22*10#`,
 all addressed `*2#<source>##`) end on an empty WHAT parameter. OWNd builds them
