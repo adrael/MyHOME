@@ -32,7 +32,8 @@ MAC = "00:03:50:11:22:33"
 RING = "*8*1#1#4#21*4##"
 CALLER_ID = "*8*9#1#4*20##"
 AUTO_ON = "*8*1#5#4#20*10##"
-SESSION_END = "*8*3#1#4*410##"
+SESSION_END = "*8*3#1#4*410##"      # end of a call (kind 1): drops the sensor
+VIEW_END = "*8*3#5#4*420##"         # end of an auto-on (kind 5): must not drop it
 LOCK_ON = "*8*19*20##"
 LOCK_OFF = "*8*20*20##"
 
@@ -246,3 +247,73 @@ def test_the_camera_platform_appears_only_with_a_password():
 
     withcam = Installation(with_panel=True, with_camera=True)
     assert list(withcam._platforms["camera"].keys()) == ["8-20"]
+
+
+# --------------------------------------------------------------------------- #
+# The call sensor's safety timeout, and the call-vs-view session end
+# --------------------------------------------------------------------------- #
+
+
+class _Timer:
+    """Captures `async_call_later` calls and the cancels it hands out.
+
+    The real helper schedules a callback on the loop and returns a cancel
+    callable; here nothing is scheduled — a test fires the captured action by
+    hand — and every cancel handed out records that it was called.
+    """
+
+    def __init__(self):
+        self.scheduled = []  # (delay, action) per arm
+        self.cancelled = 0
+
+    def schedule(self, hass, delay, action):
+        self.scheduled.append((delay, action))
+
+        def _cancel():
+            self.cancelled += 1
+
+        return _cancel
+
+
+def test_the_safety_timeout_takes_the_call_off(installation, monkeypatch):
+    """No session end arrives; the timeout drops the call on its own."""
+    _timer = _Timer()
+    monkeypatch.setattr(binary_sensor, "async_call_later", _timer.schedule)
+
+    installation.replay([RING])
+    assert installation.call.is_on is True
+
+    (_delay, _action), = _timer.scheduled
+    assert _delay == 60  # the default call_timeout
+    _action(None)  # fire it as the loop would
+    assert installation.call.is_on is False
+
+
+def test_a_second_ring_does_not_stack_timeouts(installation, monkeypatch):
+    """A re-ring cancels the first timeout before arming the next one."""
+    _timer = _Timer()
+    monkeypatch.setattr(binary_sensor, "async_call_later", _timer.schedule)
+
+    installation.replay([RING, RING])
+    assert len(_timer.scheduled) == 2
+    assert _timer.cancelled == 1
+
+
+def test_a_call_end_cancels_the_timeout(installation, monkeypatch):
+    _timer = _Timer()
+    monkeypatch.setattr(binary_sensor, "async_call_later", _timer.schedule)
+
+    installation.replay([RING, SESSION_END])
+    assert installation.call.is_on is False
+    assert _timer.cancelled == 1
+
+
+def test_a_view_end_does_not_take_the_call_off(installation, monkeypatch):
+    """`*8*3#5#…` (kind 5) closes an auto-on and must not drop a live call."""
+    _timer = _Timer()
+    monkeypatch.setattr(binary_sensor, "async_call_later", _timer.schedule)
+
+    installation.replay([RING, VIEW_END])
+    assert installation.call.is_on is True
+    # The timeout is left armed: only a call end (or the timeout) may drop it.
+    assert _timer.cancelled == 0

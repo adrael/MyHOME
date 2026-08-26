@@ -85,8 +85,9 @@ class CallerId:
 class SessionEnd:
     """``*8*3#<kind>#<mm>*<addr>##`` — an audio/video session ended.
 
-    ``kind`` is ``1`` after a call and ``5`` after a view. Either way it is the
-    signal that the call-in-progress sensor can go off.
+    ``kind`` is ``1`` after a call and ``5`` after a view. Only a call end takes
+    the call-in-progress sensor off; a view end is the close of an auto-on and
+    must not drop a call that is still up (see ``binary_sensor.py``).
     """
 
     kind: int

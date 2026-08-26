@@ -126,8 +126,12 @@ async def async_unload_entry(hass, config_entry):
 
     _configured_binary_sensors = hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM]
 
-    for _binary_sensor in _configured_binary_sensors.keys():
+    # Iterated over a copy: deleting out of the dict being walked raises on the
+    # second key. Aligned with button/event/camera, which all iterate a list.
+    for _binary_sensor in list(_configured_binary_sensors):
         del hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM][_binary_sensor]
+
+    return True
 
 
 class MyHOMEDryContact(MyHOMEEntity, BinarySensorEntity):
@@ -443,6 +447,13 @@ class MyHOMEVideoDoorEntryCall(MyHOMEEntity, BinarySensorEntity):
             self._attr_is_on = True
             self.async_write_ha_state()
         elif isinstance(message, SESSION_END_EVENTS):
+            # Only a call end (`*8*3#1#…`, kind 1) takes the sensor off. A view
+            # end (`*8*3#5#…`, kind 5) is the close of an auto-on — someone
+            # watched the camera — and would otherwise drop a call that is still
+            # in progress. The safety timeout still guards a call end that never
+            # arrives.
+            if message.kind != 1:
+                return
             LOGGER.info("%s Call ended: %s", self._gateway_handler.log_id, message)
             self._clear_timeout()
             self._attr_is_on = False
