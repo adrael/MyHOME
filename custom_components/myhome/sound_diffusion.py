@@ -51,7 +51,8 @@ MODULATION_AM_SW = 4
 STATION_MATCH_TOLERANCE = 5
 
 #: FM band around Bordeaux, keyed by frequency in hundredths of MHz.
-#: Mirrors ``STATIONS`` in the villa-marques dashboard configuration.
+#: Override it per gateway with the ``radio_stations`` configuration option
+#: rather than editing this table, which every update overwrites.
 STATIONS = {
     8770: "MOUV'",
     8810: "RADIO CAMPUS",
