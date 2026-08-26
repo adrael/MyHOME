@@ -318,6 +318,19 @@ What comes out of *this* amplifier is a different matter: `media_title`,
   unavailable while the gateway is unreachable, and comes back as soon as the
   listener reconnects. After an outage every amplifier and the tuner are asked
   for their state again, since the bus went on living without us.
+- **Frames of systems this fork does not support are ignored quietly.** Video
+  door entry (WHO 6 and 7) and door entry (WHO 8) are modelled by neither OWNd
+  0.7.48 nor this integration, so their frames — `*6*10*4000##`, `*8*19*20##` —
+  reach the listener as raw text. They are logged at debug level as *Ignoring
+  unsupported WHO*, rather than warned about once per call. A WHO nobody
+  expected still warns.
+- **OWNd cannot parse a time write without a timezone** (WHO=13), which a
+  gateway sends on its own: its parser raises an `IndexError`, `get_next`
+  answers nothing and logs *Event session crashed.* with a traceback. The
+  listener already treats that as "one frame lost, the socket is fine"; the
+  traceback is downgraded to debug (`OWNd could not read a frame`), since it is
+  an upstream bug about a frame this integration does not read. Everything else
+  OWNd logs is left alone.
 - **An entity disabled in the registry comes back on the next restart**, enabled.
   This is upstream behaviour and this fork does not change it: on every setup,
   `__init__.py` prunes the registry of what it cannot find in `hass.data`, and

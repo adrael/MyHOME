@@ -5,6 +5,7 @@ Home Assistant is stubbed (see `ha_stubs`), everything else is the real code:
 """
 
 import asyncio
+import logging
 import os
 import sys
 import types
@@ -851,6 +852,87 @@ def test_a_session_without_reader_is_reopened_and_yields(installation, monkeypat
 
     assert _other_task_ran, "the loop starved the event loop"
     assert _session.connects >= 50, "every `None` without a reader must try to reopen the session"
+
+
+@pytest.mark.parametrize(
+    ("raw", "who"),
+    [
+        ("*6*10*4000##", "6"),
+        ("*8*19*20##", "8"),
+        ("*#22*5#2#1*11##", "22"),
+        ("*22*31*2#1##", "22"),
+        ("*#4*1*0*0250##", "4"),
+        ("*1*1*77##", "1"),
+        ("not a frame", None),
+        ("", None),
+    ],
+)
+def test_the_who_of_a_frame(raw, who):
+    assert gateway.frame_who(raw) == who
+
+
+@pytest.mark.parametrize("raw", ["*6*10*4000##", "*8*19*20##", "*8*20*20##", "*#7*1*0##"])
+def test_a_frame_of_an_unsupported_who_is_a_debug_line_not_a_warning(installation, monkeypatch, caplog, raw):
+    """Video door entry (6, 7) and door entry (8): systems this fork ignores.
+
+    OWNd models none of them, so they arrive as raw strings and used to be
+    logged as "data received is not a message" — once per call, per press.
+    """
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        _run_listening_loop(installation, monkeypatch, [raw])
+
+    assert not [_record for _record in caplog.records if _record.levelname == "WARNING"]
+    assert "Ignoring unsupported WHO" in caplog.text
+
+
+def test_a_frame_of_a_who_nobody_expected_still_warns(installation, monkeypatch, caplog):
+    """Only the systems named above are quietened; the rest stays upstream's."""
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        _run_listening_loop(installation, monkeypatch, ["*9*1*0##"])
+
+    assert [_record for _record in caplog.records if _record.levelname == "WARNING"]
+
+
+# --------------------------------------------------------------------------- #
+# What OWNd itself logs
+# --------------------------------------------------------------------------- #
+
+
+def _ownd_record(message):
+    """A record as OWNd would write it, on the logger it was handed."""
+    return logging.LogRecord(gateway.OWND_LOGGER.name, logging.ERROR, __file__, 1, message, (), None)
+
+
+def test_the_ownd_sessions_are_handed_a_logger_of_their_own():
+    """A child of the integration's, so a filter on it touches nothing else."""
+    assert gateway.OWND_LOGGER.name == f"{gateway.LOGGER.name}.ownd"
+    assert any(isinstance(_filter, gateway.OWNdLogFilter) for _filter in gateway.OWND_LOGGER.filters)
+
+
+def test_the_traceback_ownd_logs_for_a_frame_it_cannot_parse_is_dropped(caplog):
+    _filter = gateway.OWNdLogFilter(gateway.LOGGER)
+
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        _kept = _filter.filter(_ownd_record("[gw] Event session crashed. IndexError: list index out of range"))
+
+    assert _kept is False
+    assert "OWNd could not read a frame" in caplog.text
+
+
+def test_every_other_ownd_record_goes_through_untouched(caplog):
+    _filter = gateway.OWNdLogFilter(gateway.LOGGER)
+
+    assert _filter.filter(_ownd_record("[gw] Message `*1*1*77##` was successfully sent.")) is True
+    assert _filter.filter(_ownd_record("[gw] Could not send message `*22*31#1##`.")) is True
+
+
+def test_a_crash_logged_through_the_ownd_logger_never_reaches_warning(caplog):
+    """The whole point: a WHO=13 time write raises in OWNd once an hour."""
+    with caplog.at_level(logging.DEBUG, logger="myhome"):
+        gateway.OWND_LOGGER.error("[test] Event session crashed.")
+
+    assert not [_record for _record in caplog.records if _record.levelno >= logging.WARNING]
+    assert "OWNd could not read a frame" in caplog.text
 
 
 def test_a_reconnection_survives_an_amplifier_that_cannot_be_updated(installation):

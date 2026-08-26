@@ -1,5 +1,7 @@
 """Code to handle a MyHome Gateway."""
 import asyncio
+import logging
+import re
 from typing import Dict, List
 
 from homeassistant.const import (
@@ -91,6 +93,60 @@ from .button import (
 #: within a breath of it coming up.
 EVENT_SESSION_RETRY_DELAY = 1
 
+#: WHOs this integration ignores on purpose: video door entry (6 and 7) and the
+#: door entry system (8). OWNd 0.7.48 models none of them, so their frames reach
+#: the listener as raw strings — `*6*10*4000##` and `*8*19*20##` were both seen
+#: on this bus — and each would be logged as "data received is not a message",
+#: once per call and per press. Everything else keeps warning, as upstream does:
+#: a WHO nobody expected is worth knowing about.
+IGNORED_WHOS = ("6", "7", "8")
+
+#: WHO of a frame, command (`*<who>*…`) or dimension (`*#<who>*…`) alike.
+_FRAME_WHO = re.compile(r"^\*#?(?P<who>\d+)[*#]")
+
+
+def frame_who(raw: str):
+    """WHO an OpenWebNet frame is addressed to, `None` when it is not one."""
+    _match = _FRAME_WHO.match(raw)
+    return _match.group("who") if _match else None
+
+
+class OWNdLogFilter(logging.Filter):
+    """Quietens the one traceback OWNd 0.7.48 logs for a frame it cannot parse.
+
+    Its `get_next` catches whatever its own parser raises, answers `None` —
+    which `listening_loop` knows what to do with — and logs `Event session
+    crashed.` with a traceback on the way. A WHO=13 time write without a
+    timezone raises an `IndexError` there, and a gateway sends one of those on
+    its own: an exception in the log every time, about a bug that cannot be
+    fixed from here, for a frame nothing reads.
+
+    So that record is dropped and said again at DEBUG on the logger handed here
+    — this integration's own, which carries no such filter, so it cannot loop.
+    Every other record OWNd writes goes through untouched.
+    """
+
+    #: What OWNd logs for it; matched on the part that is not the traceback.
+    CRASH = "Event session crashed"
+
+    def __init__(self, logger):
+        super().__init__()
+        self._logger = logger
+
+    def filter(self, record) -> bool:
+        _message = record.getMessage()
+        if self.CRASH not in _message:
+            return True
+        self._logger.debug("OWNd could not read a frame: %s", _message, exc_info=record.exc_info)
+        return False
+
+
+#: Logger handed to the OWNd sessions, so what OWNd says can be filtered without
+#: touching what this integration says. A child of the integration's logger, so
+#: it follows the same level and the same handlers.
+OWND_LOGGER = LOGGER.getChild("ownd")
+OWND_LOGGER.addFilter(OWNdLogFilter(LOGGER))
+
 
 class MyHOMEGatewayHandler:
     """Manages a single MyHOME Gateway."""
@@ -151,14 +207,14 @@ class MyHOMEGatewayHandler:
         return self.gateway.firmware
 
     async def test(self) -> Dict:
-        return await OWNSession(gateway=self.gateway, logger=LOGGER).test_connection()
+        return await OWNSession(gateway=self.gateway, logger=OWND_LOGGER).test_connection()
 
     async def listening_loop(self):
         self._terminate_listener = False
 
         LOGGER.debug("%s Creating listening worker.", self.log_id)
 
-        _event_session = OWNEventSession(gateway=self.gateway, logger=LOGGER)
+        _event_session = OWNEventSession(gateway=self.gateway, logger=OWND_LOGGER)
         await _event_session.connect()
         self._set_connected(True)
 
@@ -235,6 +291,18 @@ class MyHOMEGatewayHandler:
                     LOGGER.debug(
                         "%s Ignoring legacy WHO=16 message: `%s`",
                         self.log_id,
+                        _raw_message,
+                    )
+                    continue
+
+                _who = frame_who(_raw_message)
+                if _who in IGNORED_WHOS:
+                    # A frame of a system this integration does not support and
+                    # OWNd does not model: worth a line, not a warning.
+                    LOGGER.debug(
+                        "%s Ignoring unsupported WHO %s message: `%s`",
+                        self.log_id,
+                        _who,
                         _raw_message,
                     )
                     continue
@@ -658,7 +726,7 @@ class MyHOMEGatewayHandler:
             worker_id,
         )
 
-        _command_session = OWNCommandSession(gateway=self.gateway, logger=LOGGER)
+        _command_session = OWNCommandSession(gateway=self.gateway, logger=OWND_LOGGER)
         await _command_session.connect()
 
         while not self._terminate_sender:
