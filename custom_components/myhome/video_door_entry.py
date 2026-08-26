@@ -124,6 +124,9 @@ SESSION_END_EVENTS = (SessionEnd,)
 # the second field (1 = call, 5 = view) tells them apart.
 _RING = re.compile(r"^\*8\*1#1#(?P<mm>\d+)#(?P<iu>\d+)\*(?P<x>\d+)##$")
 _AUTO_ON = re.compile(r"^\*8\*1#5#(?P<mm>\d+)#(?P<area>\d+)\*(?P<x>\d+)##$")
+# Only the call caller-id (`9#1#`) is parsed. The view variant `*8*9#5#…##`
+# carries the panel address of an auto-on, which no entity acts on (a view does
+# not ring and does not start a call), so it is deliberately left unmatched.
 _CALLER_ID = re.compile(r"^\*8\*9#1#(?P<mm>\d+)\*(?P<ep>\d+)##$")
 _SESSION_END = re.compile(r"^\*8\*3#(?P<kind>\d+)#(?P<mm>\d+)\*(?P<addr>\d+)##$")
 _LOCK_ON = re.compile(r"^\*8\*19\*(?P<a>\d+)##$")
