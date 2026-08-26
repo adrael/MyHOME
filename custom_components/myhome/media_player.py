@@ -189,8 +189,13 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
 
     @property
     def _tuning_preset(self) -> int:
-        """Preset `select_source` overwrites, the `tuning_preset` of the gateway."""
-        return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_TUNING_PRESET) or DEFAULT_TUNING_PRESET
+        """Preset `select_source` overwrites, the `tuning_preset` of the gateway.
+
+        Read with a default rather than with `or`, unlike `_radio_stations`
+        just above: an empty station table means "no table", a preset of 0
+        means nothing at all and must not be quietly read as 15.
+        """
+        return self._hass.data[DOMAIN][self._gateway_handler.mac].get(CONF_TUNING_PRESET, DEFAULT_TUNING_PRESET)
 
     @property
     def _frequency(self):
