@@ -695,6 +695,7 @@ class FakeEventSession:
         self._handler = handler
         self.connects = 0
         self.closed = False
+        self._stream_reader = object()
 
     async def connect(self):
         self.connects = self.connects + 1
@@ -758,17 +759,21 @@ def test_a_session_that_raises_is_caught_up_with_once_it_answers_again(installat
     assert installation.handler.status_requests.count("*#22*5#2#1*11##") == 1
 
 
-def test_a_session_answering_nothing_warns_once_per_outage(installation, monkeypatch, caplog):
-    """`None` comes back for every failure OWNd meets, and it can come in floods."""
+def test_a_frame_owND_cannot_parse_is_ignored_without_dropping_the_session(installation, monkeypatch, caplog):
+    """OWNd answers `None` for a frame its parser chokes on (a WHO=13 time write
+    without timezone raises an IndexError in 0.7.48); the socket is fine."""
     with caplog.at_level("WARNING", logger="myhome"):
-        _run_listening_loop(installation, monkeypatch, [None, None, None, "*#22*3#2#2*12*1*4##", None])
+        _session = _run_listening_loop(installation, monkeypatch, [None, None, "*#22*3#2#2*12*1*4##", None])
 
-    _warnings = [_record for _record in caplog.records if "answered nothing" in _record.getMessage()]
-    assert len(_warnings) == 2, "once when it stopped answering, once after it came back and stopped again"
+    # (the loop marks the gateway disconnected when it exits; what matters is
+    # that no reconnection happened along the way and the frame after got in)
+    assert _session.connects == 1, "the initial connect only: a parse failure is not a lost socket"
+    assert installation.entity(2, 2).state == PLAYING
+    assert not [_record for _record in caplog.records if _record.levelname == "WARNING"]
 
 
-def test_a_session_answering_nothing_is_reopened_and_yields(installation, monkeypatch):
-    """A `None` answer means the socket is gone: reopen it, and let other tasks run meanwhile."""
+def test_a_session_without_reader_is_reopened_and_yields(installation, monkeypatch):
+    """A missing reader makes `get_next` fail without yielding: reopen it, and let other tasks run meanwhile."""
     _other_task_ran = False
 
     async def _other():
@@ -779,6 +784,7 @@ def test_a_session_answering_nothing_is_reopened_and_yields(installation, monkey
         _task = asyncio.ensure_future(_other())
         monkeypatch.setattr(gateway, "EVENT_SESSION_RETRY_DELAY", 0)
         _session = FakeEventSession([None] * 50, installation.handler)
+        _session._stream_reader = None
         monkeypatch.setattr(gateway, "OWNEventSession", lambda gateway, logger: _session)
         await installation.handler.listening_loop()
         await _task
@@ -787,7 +793,7 @@ def test_a_session_answering_nothing_is_reopened_and_yields(installation, monkey
     _session = asyncio.run(_both())
 
     assert _other_task_ran, "the loop starved the event loop"
-    assert _session.connects >= 50, "every `None` must try to reopen the session"
+    assert _session.connects >= 50, "every `None` without a reader must try to reopen the session"
 
 
 def test_a_reconnection_survives_an_amplifier_that_cannot_be_updated(installation):

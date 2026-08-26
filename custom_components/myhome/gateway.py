@@ -187,21 +187,24 @@ class MyHOMEGatewayHandler:
 
             if message is None:
                 # `OWNEventSession.get_next` answers `None` for every failure it
-                # meets. It reconnects itself on an interrupted read and on that
-                # one only; whatever it was, the socket is gone until a frame
-                # proves otherwise. Logged once per outage: a session that stops
-                # answering does so in floods.
-                if self.is_connected:
-                    LOGGER.warning("%s Event session answered nothing, waiting for it to come back.", self.log_id)
-                self._set_connected(False)
-                # `get_next` fails without yielding (a missing reader raises
-                # before any await): reopen the session ourselves and pause,
-                # or this loop would starve the event loop.
-                try:
-                    await _event_session.connect()
-                except Exception:  # pylint: disable=broad-except
-                    LOGGER.debug("%s Could not reopen the event session yet.", self.log_id)
-                await asyncio.sleep(EVENT_SESSION_RETRY_DELAY)
+                # meets, and most of them are harmless: a frame its parser
+                # chokes on (a WHO=13 time write without a timezone raises an
+                # IndexError in OWNd 0.7.48) or a read it already reconnected
+                # after. The socket is only really gone when the reader is
+                # missing — `get_next` then fails without yielding, so reopen
+                # the session ourselves and pause, or this loop would starve
+                # the event loop.
+                if getattr(_event_session, "_stream_reader", None) is None:
+                    if self.is_connected:
+                        LOGGER.warning("%s Event session lost, reopening it.", self.log_id)
+                    self._set_connected(False)
+                    try:
+                        await _event_session.connect()
+                    except Exception:  # pylint: disable=broad-except
+                        LOGGER.debug("%s Could not reopen the event session yet.", self.log_id)
+                    await asyncio.sleep(EVENT_SESSION_RETRY_DELAY)
+                else:
+                    LOGGER.debug("%s Event session returned nothing for one frame, ignoring it.", self.log_id)
                 continue
 
             if not self.is_connected:
@@ -597,8 +600,7 @@ class MyHOMEGatewayHandler:
             task = await self.send_buffer.get()
             LOGGER.debug(
                 "%s Message `%s` was successfully unqueued by worker %s.",
-                self.name,
-                self.gateway.host,
+                self.log_id,
                 task["message"],
                 worker_id,
             )
