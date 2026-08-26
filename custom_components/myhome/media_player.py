@@ -245,11 +245,16 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
     def source(self):
         """Station the shared tuner is on, `None` when its frequency is unlisted.
 
-        Scoped to this amplifier like `media_channel`: what is coming out of it,
-        so `None` while it is off. Selecting a station works all the same, the
-        tuner being shared by the whole installation.
+        Scoped to the tuner, like `frequency_mhz` and `preset`, not to this
+        amplifier: it names what the shared box is tuned to whether this
+        amplifier plays it or not. Selecting a station works with the amplifier
+        off too, so a source that emptied itself when it did would leave a
+        dropdown with nothing selected in front of a working control.
+
+        What comes out of *this* amplifier is `media_channel`, which does go
+        quiet when it is off.
         """
-        return station_label(self._frequency, self._radio_stations) if self._is_on else None
+        return station_label(self._frequency, self._radio_stations)
 
     @property
     def extra_state_attributes(self):

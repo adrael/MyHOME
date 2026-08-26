@@ -155,9 +155,12 @@ Two consequences of it being a preset:
   next/previous station: the tuner is shared by the whole installation, and
   which amplifiers play it is a separate question.
 
-`source` is scoped to the amplifier the way `media_channel` is: it names the
-station only while that amplifier is playing. `source_list` is always there,
-and selecting works whether the amplifier is on or off.
+`source` is scoped to the **tuner**, like `frequency_mhz` and `preset`: every
+amplifier names the station the shared box is on, playing it or not.
+`source_list` is always there and selecting works with the amplifier off, so a
+dropdown on a switched-off amplifier shows what it would play rather than
+nothing at all. `media_channel` is the amplifier-scoped one, and does go quiet
+when it stops.
 
 ### Attributes
 

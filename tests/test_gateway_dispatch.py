@@ -918,7 +918,9 @@ def test_selecting_a_station_does_not_turn_the_amplifier_on(installation):
     asyncio.run(_entity.async_select_source("FRANCE INTER"))
 
     assert _entity.state is None
-    assert _entity.source is None
+    # The tuner moved, so `source` follows it; the amplifier did not.
+    assert _entity.source == "FRANCE INTER"
+    assert _entity.media_channel is None
     assert _entity.extra_state_attributes["frequency_mhz"] == 89.7
 
 
@@ -927,7 +929,26 @@ def test_source_reflects_the_station_the_shared_tuner_is_on(installation):
     assert installation.entity(2, 2).source == "SUD RADIO"
 
     installation.replay(["*#22*5#2#1*11*1*10110*14##"])
-    assert installation.entity(2, 2).source is None
+    assert installation.entity(2, 2).source is None, "101.1 MHz is not in the station table"
+
+
+def test_source_is_scoped_to_the_tuner_not_to_the_amplifier(installation):
+    """Every amplifier names the station, playing it or not — `media_channel` does not.
+
+    A dashboard showing the station dropdown of an amplifier that is off must
+    show the station selected in it, or the control looks broken.
+    """
+    installation.replay(["*#22*5#2#1*11*1*10600*14##"])
+
+    _off = installation.entity(2, 1)
+    assert _off.state is None
+    assert _off.source == "SUD RADIO"
+    assert _off.media_channel is None
+    assert _off.media_title is None
+
+    installation.replay(["*#22*3#2#1*12*0*10##"])
+    assert _off.state == OFF
+    assert _off.source == "SUD RADIO"
 
 
 def test_source_carries_the_disambiguating_suffix_of_the_source_list():
