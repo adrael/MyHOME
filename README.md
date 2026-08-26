@@ -607,8 +607,10 @@ house:                             # your gateway key, as elsewhere in the file
 
 Nothing here is baked into the code: every address, the camera password and the
 host come from the file. `camera_password` is the value the panel's own web page
-sends as `CAM_PASSWD` — usually the MD5 of the OPEN bus password. Keep it in
-`secrets.yaml` and reference it with `camera_password: !secret f454_cam_password`.
+sends as `CAM_PASSWD` — usually the MD5 of the OPEN bus password. Note that
+`myhome.yaml` is read as plain YAML and does **not** support Home Assistant's
+`!secret` tag, so put the value directly (it is a hash, not a plaintext
+credential).
 
 ### Example automation — ring to a phone with a snapshot
 
