@@ -543,13 +543,19 @@ pytest
 
 ## Video door entry (WHO=8)
 
-A BTicino/Legrand video door entry system (WHO=8) exposed as four standard Home
-Assistant entities per entrance panel. **Verified on hardware** (gateway F454,
-entrance panel 20, indoor unit 21, gate strike on activation address 20,
-2026-08-26): the doorbell ring, the auto-on, the session end and the gate-open
-echo were all seen on the bus, and the web control that opens the gate put
-`*8*19*20##` on it. Everything but the camera wiring through Home Assistant is
-confirmed end to end; see "Verified on hardware" below for what is not.
+A BTicino/Legrand video door entry system (WHO=8) exposed as three standard Home
+Assistant entities per entrance panel — a doorbell `event`, an "Open" `button`
+and a "Call in progress" `binary_sensor` — plus a `camera` when a
+`camera_password` is set.
+
+The WHO=8 frames the integration reads — the doorbell ring, the auto-on, the
+caller id, the session end and the gate-open echo — are confirmed on the F454 bus
+(gateway F454, entrance panel 20, indoor unit 21, gate strike on activation
+address 20, 2026-08-26), and the web control that opens the gate put `*8*19*20##`
+on it. What has **not** been exercised from Home Assistant: pressing the Open
+button to drive the gate, and pulling a live snapshot during a call. Both are
+read from the protocol, not yet driven end to end through this integration — see
+Limitations below.
 
 Neither OWNd 0.7.48 nor this integration used to model WHO=8: the frames reached
 the listener as raw text and were logged as *Ignoring unsupported WHO*. They now
@@ -585,16 +591,18 @@ Under a gateway, next to `media_player:` and the others:
 
 ```yaml
 # myhome.yaml
-video_door_entry:
-  entrance_panel:                # the device key; one block per panel
-    name: "Front gate"
-    entrance_address: 20         # entrance panel (EP) address, default 20
-    lock_address: 20             # gate-strike activation address, default = entrance_address
-    camera_where: 4000           # 4000 + camera number, default 4000
-    camera_password: "0123456789abcdef0123456789abcdef"   # in clear or MD5 of the OPEN bus password; omit to skip the camera
-    camera_host: 192.168.0.10    # optional, default = the gateway host
-    verify_ssl: false            # the panel serves the snapshot with a self-signed cert
-    call_timeout: 60             # seconds before the call sensor gives up on a missing session end
+house:                             # your gateway key, as elsewhere in the file
+  mac: "00:03:50:11:22:33"         # the gateway MAC
+  video_door_entry:
+    entrance_panel:                # the device key; one block per panel
+      name: "Front gate"
+      entrance_address: 20         # entrance panel (EP) address, default 20
+      lock_address: 20             # gate-strike activation address, default = entrance_address
+      camera_where: 4000           # 4000 + camera number, default 4000
+      camera_password: "0123456789abcdef0123456789abcdef"   # in clear or MD5 of the OPEN bus password; omit to skip the camera
+      camera_host: 192.168.0.10    # optional, default = the gateway host
+      verify_ssl: false            # the panel serves the snapshot with a self-signed cert
+      call_timeout: 60             # seconds before the call sensor gives up on a missing session end
 ```
 
 Nothing here is baked into the code: every address, the camera password and the
@@ -610,12 +618,12 @@ attach the camera image:
 ```yaml
 automation:
   - alias: Doorbell ring notification
-    trigger:
-      - platform: state
+    triggers:
+      - trigger: state
         entity_id: event.front_gate_doorbell
-    condition: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
-    action:
-      - service: notify.mobile_app_your_phone
+    conditions: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
+    actions:
+      - action: notify.mobile_app_your_phone
         data:
           message: "Someone at the front gate"
           data:
@@ -626,8 +634,10 @@ automation:
 
 [`examples/dashboard-videophone.yaml`](examples/dashboard-videophone.yaml) is a
 ready-to-paste card: the camera as a picture-glance with the Open button on it,
-the doorbell event and the call-in-progress sensor below. Entity ids follow the
-`name:` of the panel, exactly as the amplifiers do.
+the doorbell event and the call-in-progress sensor below. It uses the `sections`
+view and the `heading` card, so it **requires Home Assistant 2024.10+**; the
+integration itself needs only 2024.3 (the `event` entity, 2023.8). Entity ids
+follow the `name:` of the panel, exactly as the amplifiers do.
 
 ### Limitations & verified on hardware
 

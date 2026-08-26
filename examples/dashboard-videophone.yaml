@@ -37,7 +37,6 @@ views:
           # opens its more-info dialog (the live view); the strike icon opens
           # the gate. Drop this card entirely if the panel has no camera.
           - type: picture-glance
-            title: Front gate
             camera_image: camera.front_gate_camera
             camera_view: auto
             entities:
