@@ -220,9 +220,12 @@ def test_the_password_is_never_logged(monkeypatch, caplog):
         _image = asyncio.run(_cam.async_camera_image())
 
     assert _image is None
+    # The password itself, and the query key it rides under, must be absent: their
+    # absence proves the request URL was not interpolated. The host is not asserted
+    # on — the real `log_id` legitimately carries the gateway address, and that is
+    # not a secret.
     assert PASSWORD not in caplog.text
     assert "CAM_PASSWD" not in caplog.text
-    assert HOST not in caplog.text
     # The failure is still reported: type and HTTP status make the log useful.
     assert "ClientResponseError" in caplog.text
     assert "401" in caplog.text

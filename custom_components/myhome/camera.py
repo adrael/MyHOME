@@ -173,7 +173,11 @@ class MyHOMEDoorCamera(MyHOMEEntity, Camera):
         self._verify_ssl = verify_ssl
 
         self._last_image = None
-        self._last_fetch = 0.0
+        # `None` until the first fetch is attempted, not `0.0`: `time.monotonic()`
+        # has an arbitrary origin (uptime on Linux) and can legitimately read
+        # near zero just after a boot, which a numeric sentinel would misread as
+        # "never fetched" and skip the throttle on.
+        self._last_fetch = None
         self._fetch_lock = asyncio.Lock()
 
     async def async_added_to_hass(self):
@@ -208,7 +212,7 @@ class MyHOMEDoorCamera(MyHOMEEntity, Camera):
             # a panel stuck on a persistent 401 must not re-open a session and
             # hammer the bus and the web endpoint on every single call. The stamp
             # is taken before the fetch so a failure counts against the window too.
-            if self._last_fetch and (_now - self._last_fetch) < SNAPSHOT_THROTTLE:
+            if self._last_fetch is not None and (_now - self._last_fetch) < SNAPSHOT_THROTTLE:
                 return self._last_image
             self._last_fetch = _now
 
