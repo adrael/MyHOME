@@ -116,7 +116,10 @@ house:
     ampli_cuisine: { where: "3#7#1", name: "Radio Cuisine" }
 ```
 
-Frequencies not listed simply show without a name (`101.1 MHz`).
+Frequencies not listed simply show without a name (`101.1 MHz`). Keys are read
+as hundredths of MHz, so `106`, `106.0` and `106.004` are the same station:
+listing two of them is refused at startup rather than keeping whichever came
+last.
 
 ### Selecting a station
 

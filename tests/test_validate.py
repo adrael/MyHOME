@@ -121,6 +121,28 @@ def test_radio_stations_reject_garbage(table):
         validate.RadioStations()(table)
 
 
+@pytest.mark.parametrize(
+    "table",
+    [
+        {"106.0": "SUD RADIO", "106": "AUTRE"},
+        {"106.0": "SUD RADIO", "106.004": "AUTRE"},
+        {"106.0": "SUD RADIO", "106.0000": "SUD RADIO"},
+    ],
+)
+def test_radio_stations_reject_two_keys_landing_on_the_same_frequency(table):
+    """Rekeying is lossy, and the loser would vanish without a word."""
+    with pytest.raises(Invalid):
+        validate.RadioStations()(table)
+
+
+def test_radio_stations_name_both_colliding_keys():
+    with pytest.raises(Invalid) as _error:
+        validate.RadioStations()({"106.0": "SUD RADIO", "106.004": "AUTRE"})
+
+    assert "106.0" in str(_error.value)
+    assert "106.004" in str(_error.value)
+
+
 def test_radio_stations_are_stored_beside_the_platforms_not_among_them():
     """A gateway option must not end up looking like a platform to set up."""
     result = validate.config_schema(

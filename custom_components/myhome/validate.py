@@ -189,17 +189,28 @@ class RadioStations(object):
 
     Frequencies are rekeyed to hundredths of MHz, the unit the bus uses and the
     one `sound_diffusion.station_name` matches against.
+
+    Rekeying is lossy — `106`, `106.0` and `106.004` all land on 10600 — so two
+    keys reaching the same one are refused rather than silently collapsed into
+    whichever came last in the file.
     """
 
     def __call__(self, v):
         if not isinstance(v, dict):
             raise Invalid(f"Invalid radio stations table {v}, it must be a mapping of frequencies in MHz to station names.")
         _table = {}
+        _written_by = {}
         for _frequency, _name in v.items():
             try:
                 _key = int(round(float(_frequency) * 100))
             except (TypeError, ValueError):
                 raise Invalid(f"Invalid radio station frequency {_frequency}, it must be a frequency in MHz like '106.0'.") from None
+            if _key in _table:
+                raise Invalid(
+                    f"Invalid radio stations table, `{_written_by[_key]}` and `{_frequency}` are the same frequency "
+                    f"({_key / 100} MHz) and only one of them would be kept."
+                )
+            _written_by[_key] = _frequency
             _table[_key] = str(_name)
         return _table
 
