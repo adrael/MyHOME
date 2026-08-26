@@ -259,6 +259,14 @@ What comes out of *this* amplifier is a different matter: `media_title`,
   unavailable while the gateway is unreachable, and comes back as soon as the
   listener reconnects. After an outage every amplifier and the tuner are asked
   for their state again, since the bus went on living without us.
+- **An entity disabled in the registry comes back on the next restart**, enabled.
+  This is upstream behaviour and this fork does not change it: on every setup,
+  `__init__.py` prunes the registry of what it cannot find in `hass.data`, and
+  `hass.data` is filled by the entities *as they are added*. A disabled entity is
+  never added, so its unique id is missing from that list, its registry entry is
+  removed as an orphan — and it is created afresh, enabled, the next time round.
+  **Hide** the entity instead of disabling it (a hidden entity is still added, so
+  it survives the prune), or take the device out of `myhome.yaml` altogether.
 - **Groups**: a `platform: group` media player is fine for on/off and volume,
   but **never send next/previous track to a group**. Each member would ask the
   shared tuner for the next station and it would jump once per member. Drive the
