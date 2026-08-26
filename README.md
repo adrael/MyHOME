@@ -171,6 +171,12 @@ is added only when it is not FM (2 long wave, 3 medium wave, 4 short wave).
 Attributes without a value are left out, so an amplifier of a gateway whose
 tuner never answered carries only its addressing.
 
+`preset` disappears when the tuner moves off the slot it was on. Seeking upwards
+reports the new frequency and nothing else — verified on hardware — so the slot
+number we hold is stale and is dropped rather than shown as if it were still
+true. The frequency and the station name stay; the preset comes back on the next
+frame that carries one.
+
 What comes out of *this* amplifier is a different matter: `media_title`,
 `media_channel` and `media_content_type` are `None` unless it is playing.
 

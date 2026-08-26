@@ -584,6 +584,14 @@ class MyHOMEGatewayHandler:
 
         Read back by every amplifier listening to that source, which is why an
         unchanged reading is worth nothing to them.
+
+        A dimension 5 landing on another frequency makes the preset we hold
+        stale, and it is dropped. Verified on hardware 2026-08-26: an automatic
+        scan upwards (`*22*5#*2#1##`) moves the tuner to the next station it
+        catches and reports **only** `*#22*5#2#1*5*1*10730##` — no dimension 11,
+        no dimension 6. Keeping the preset would have the entity claim the tuner
+        still sits on a slot it left. A scan downwards does emit dimension 11
+        when it falls back onto a preset, and that one puts the number back.
         """
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
         _before = dict(_source)
@@ -593,6 +601,10 @@ class MyHOMEGatewayHandler:
             _source["frequency"] = event.frequency
             _source["station"] = event.station
         elif isinstance(event, SourceFrequency):
+            if _source.get("frequency") != event.frequency:
+                # Compared before the overwrite, so "moved" is what the bus did,
+                # not what we just wrote.
+                _source["station"] = None
             _source["modulation"] = event.modulation
             _source["frequency"] = event.frequency
         elif isinstance(event, SourceStation):

@@ -955,3 +955,85 @@ def test_selecting_a_station_the_table_does_not_carry_is_refused(installation):
 
 def test_selecting_a_station_supports_source_selection(installation):
     assert installation.entity(7, 1).supported_features & ha_stubs.MediaPlayerEntityFeature.SELECT_SOURCE
+
+
+# --------------------------------------------------------------------------- #
+# A preset the tuner left behind
+# --------------------------------------------------------------------------- #
+
+#: Hardware session of 2026-08-26, `hwtest-write-presets.log`, sequence S1:
+#: an automatic scan upwards answers with dimension 5 and nothing else.
+SCAN_UP = ["*#22*5#2#1*5*1*10730##"]
+
+#: Same log, sequence S2: a scan downwards falls back onto preset 15 and says so.
+SCAN_DOWN = [
+    "*#22*5#2#1*5*1*10680##",
+    "*#22*5#2#1*11*1*10680*15##",
+    "*#22*5#2#1*5*1*10680##",
+    "*#22*5#2#1*11*1*10680*15##",
+]
+
+
+def test_a_scan_that_moves_the_frequency_drops_the_preset(installation):
+    """S1: the tuner jumped to 107.3 and never said which slot it is on now."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    assert installation.tuner[1]["station"] == 15
+
+    installation.replay(SCAN_UP)
+
+    assert installation.tuner[1]["frequency"] == 10730
+    assert installation.tuner[1]["station"] is None
+
+
+def test_a_stale_preset_is_left_out_of_the_attributes(installation):
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10680*15##"])
+    _entity = installation.entity(2, 2)
+    assert _entity.extra_state_attributes["preset"] == 15
+
+    installation.replay(SCAN_UP)
+
+    assert "preset" not in _entity.extra_state_attributes
+    # The frequency is what the tuner reported, and the station table still
+    # names it: only the slot number is unknown.
+    assert _entity.media_title == "107.3 MHz · BFM BUSINESS"
+    assert _entity.extra_state_attributes["frequency_mhz"] == 107.3
+    assert _entity.extra_state_attributes["station_name"] == "BFM BUSINESS"
+
+
+def test_a_scan_that_lands_on_a_preset_puts_the_number_back(installation):
+    """S2: dimension 5, then dimension 11 when the frequency falls on a slot."""
+    installation.replay(SCAN_UP)
+    assert installation.tuner[1]["station"] is None
+
+    installation.replay(SCAN_DOWN)
+
+    assert installation.tuner[1]["frequency"] == 10680
+    assert installation.tuner[1]["station"] == 15
+
+
+def test_a_dimension_5_on_the_frequency_we_hold_keeps_the_preset(installation):
+    """The tuner repeats itself constantly; a reading that moved nothing is not a scan."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.replay(["*#22*5#2#1*5*1*10680##"])
+
+    assert installation.tuner[1]["station"] == 15
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+
+def test_a_dimension_6_puts_the_preset_back_on_its_own(installation):
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"] + SCAN_UP)
+    assert installation.tuner[1]["station"] is None
+
+    installation.replay(["*#22*2#1*6*3##"])
+
+    assert installation.tuner[1]["station"] == 3
+    assert installation.tuner[1]["frequency"] == 10730
+
+
+def test_the_first_frequency_of_an_unknown_tuner_carries_no_preset(installation):
+    installation.replay(["*#22*5#2#1*5*1*10730##"])
+    assert installation.tuner[1]["frequency"] == 10730
+    assert installation.tuner[1]["station"] is None
