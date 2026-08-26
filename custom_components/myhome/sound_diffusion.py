@@ -305,6 +305,26 @@ class SourceStation:
 
 
 @dataclass(frozen=True)
+class SourceRds:
+    """``*#22*5#2#<s>*10*<c1>*…*<cn>##`` — the RDS name a tuner is broadcasting.
+
+    Each value is the decimal code of one ASCII character; eight of them on the
+    hardware this was written against, which is the length of an RDS *programme
+    service* name. ``83*75*89*82*79*67*75*32`` is ``SKYROCK ``, stored here
+    stripped of the padding: ``SKYROCK``. A frame of eight spaces means the
+    tuner has nothing to say yet, and gives an empty ``text``.
+
+    Verified on hardware (F454, 2026-08-26): the tuner emits these on its own
+    once :func:`rds_start` was sent, one per text it receives — including after
+    a station change, which needs no new request. There is no reading it on
+    demand: the dimension 10 *request* is refused (see :func:`rds_start`).
+    """
+
+    source: int
+    text: str
+
+
+@dataclass(frozen=True)
 class SourceState:
     """``*#22*5#2#<s>*12*<state>*<mmtype>##`` — source status (dimension 12)."""
 
@@ -323,6 +343,7 @@ SoundDiffusionEvent = Union[
     SourceFrequency,
     SourceFrequencyStation,
     SourceStation,
+    SourceRds,
     SourceState,
 ]
 
@@ -340,6 +361,7 @@ SOURCE_EVENTS = (
     SourceFrequency,
     SourceFrequencyStation,
     SourceStation,
+    SourceRds,
 )
 
 
@@ -362,6 +384,9 @@ _SOURCE_FREQUENCY_STATION = re.compile(
     rf"^\*#22\*{_SOURCE}\*11\*(?P<modulation>\d+)\*(?P<frequency>\d+)\*(?P<station>\d+)##$"
 )
 _SOURCE_STATION = re.compile(rf"^\*#22\*{_SOURCE}\*6\*(?P<station>\d+)##$")
+#: One value or many: the spec writes the RDS frame ``*10*VAL1*VAL2*VALn##``,
+#: and the tuner of this installation always sends eight.
+_SOURCE_RDS = re.compile(rf"^\*#22\*{_SOURCE}\*10\*(?P<codes>\d+(?:\*\d+)*)##$")
 _SOURCE_ROUTED = re.compile(r"^\*22\*(?:2|21)#(?P<mmtype>\d+)#(?P<area>\d+)\*5#2#(?P<source>\d+)##$")
 _SOURCE_COMMAND = re.compile(r"^\*22\*(?P<what>\d+)(?P<what_param>(?:#\d+)*)\*2#(?P<source>\d+)##$")
 
@@ -373,6 +398,21 @@ _AREA_COMMAND = re.compile(r"^\*22\*(?P<what>[01])#(?P<mmtype>\d+)#(?P<area_para
 def _what_params(raw: str) -> tuple:
     """Split a ``#a#b`` WHAT parameter suffix into a tuple of ints."""
     return tuple(int(_part) for _part in raw.split("#") if _part != "")
+
+
+def _rds_text(codes: str) -> str:
+    """Decode the character codes of a dimension 10 frame, padding stripped.
+
+    Anything outside printable ASCII is dropped rather than shown: an RDS name
+    is eight characters of it, and a value the tuner sends for its own reasons
+    has no business ending up in front of a user.
+    """
+    _characters = []
+    for _code in codes.split("*"):
+        _value = int(_code)
+        if 32 <= _value <= 126:
+            _characters.append(chr(_value))
+    return "".join(_characters).strip()
 
 
 def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
@@ -444,6 +484,13 @@ def parse_sound_diffusion(raw: str) -> Optional[SoundDiffusionEvent]:
         return SourceStation(
             source=int(_match.group("source")),
             station=int(_match.group("station")),
+        )
+
+    _match = _SOURCE_RDS.match(raw)
+    if _match:
+        return SourceRds(
+            source=int(_match.group("source")),
+            text=_rds_text(_match.group("codes")),
         )
 
     _match = _SOURCE_ROUTED.match(raw)
@@ -599,6 +646,33 @@ def frequency_seek_down(source: int = 1, step: Optional[int] = None) -> str:
     fallen back onto a stored preset, ``*#22*5#2#1*11*1*10680*15##``.
     """
     return f"*22*6#{step if step is not None else ''}*2#{source}##"
+
+
+def rds_start(source: int = 1) -> str:
+    """Ask a source to keep telling its RDS name (WHAT 31).
+
+    **Not the spec form.** ``*22*31#<source>##`` (§3.1.10) is refused by the
+    gateway — NACK, verified on hardware 2026-08-26 — while the same WHAT
+    addressed to the source as a WHERE is accepted, and the tuner answers
+    ``*#22*5#2#<s>*10*…##`` within about 350 ms.
+
+    From then on it emits one of those per text it receives, station changes
+    included, until :func:`rds_stop` or a restart of the gateway. It is sent
+    once per source and per connection, next to the dimension 11 request the
+    entities claim (`tuner.request_tuning`).
+    """
+    return f"*22*31*2#{source}##"
+
+
+def rds_stop(source: int = 1) -> str:
+    """Stop the RDS stream of a source. See :func:`rds_start` for the form.
+
+    Verified on hardware, answered with ``*#22*5#2#<s>*25*0*0*0##`` — dimension
+    25, which neither the spec nor this integration knows anything about. The
+    integration never sends this: a stream of eight characters costs nothing and
+    an unload has no reason to quieten a tuner the wall controls also read.
+    """
+    return f"*22*32*2#{source}##"
 
 
 def store_station(source: int, station: int) -> str:
