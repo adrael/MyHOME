@@ -25,6 +25,8 @@ from homeassistant.components.button import (
 
 from homeassistant.const import CONF_NAME
 
+from homeassistant.exceptions import ServiceValidationError
+
 from OWNd.message import OWNCommand
 
 from .const import (
@@ -32,19 +34,27 @@ from .const import (
     CONF_ENTITIES,
     CONF_MANUFACTURER,
     CONF_PLATFORMS,
+    CONF_RADIO_STATIONS,
     CONF_SOUND_SOURCES,
     CONF_SOURCE,
+    CONF_TUNING_PRESET,
     CONF_WHERE,
     CONF_WHO,
     DOMAIN,
 )
 from .myhome_device import MyHOMEEntity
 from .sound_diffusion import (
+    DEFAULT_TUNING_PRESET,
+    MODULATION_FM,
+    SourceFrequencyStation,
     SourceStation,
     frequency_seek_down,
     frequency_seek_up,
     rds_start,
     request_source_frequency_station,
+    set_frequency,
+    station_entries,
+    station_label,
     station_next,
     station_previous,
 )
@@ -67,6 +77,103 @@ async def request_tuning(gateway: MyHOMEGatewayHandler, source: int) -> None:
     """
     await gateway.send_status_request(OWNCommand(request_source_frequency_station(source)))
     await gateway.send(OWNCommand(rds_start(source)))
+
+
+class TunerState:
+    """What one source is tuned to, and the one way of sending it elsewhere.
+
+    A source is a box shared by every amplifier listening to it, so its tuning
+    is held once per gateway rather than on any one entity. This is that store,
+    with the two gateway options that go with it, so that picking a station by
+    name is one piece of code: `media_player.async_select_source` and the
+    `select` entity of the tuner device both come through `select_station`.
+
+    Built on the spot wherever it is needed — it holds nothing of its own, only
+    the way to `hass.data`.
+    """
+
+    def __init__(self, hass, gateway: MyHOMEGatewayHandler, source: int):
+        self._hass = hass
+        self._gateway = gateway
+        self._source = source
+
+    @property
+    def _gateway_data(self) -> dict:
+        return self._hass.data[DOMAIN][self._gateway.mac]
+
+    @property
+    def store(self) -> dict:
+        """Tuning of this source, shared with every entity that reads it."""
+        return self._gateway_data.setdefault(CONF_SOUND_SOURCES, {}).setdefault(self._source, {})
+
+    @property
+    def radio_stations(self):
+        """Station table configured on the gateway, `None` for the built-in one.
+
+        An empty table is no table: `radio_stations:` left blank in the
+        configuration file must not blank out every station name.
+        """
+        return self._gateway_data.get(CONF_RADIO_STATIONS) or None
+
+    @property
+    def tuning_preset(self) -> int:
+        """Preset a retuning overwrites, the `tuning_preset` of the gateway.
+
+        Read with a default rather than with `or`, unlike `radio_stations` just
+        above: an empty station table means "no table", a preset of 0 means
+        nothing at all and must not be quietly read as 15.
+        """
+        return self._gateway_data.get(CONF_TUNING_PRESET, DEFAULT_TUNING_PRESET)
+
+    @property
+    def frequency(self):
+        """Frequency the source reported, in hundredths of MHz."""
+        return self.store.get("frequency")
+
+    @property
+    def station_options(self) -> list:
+        """Every station of the table, by frequency, as a user picks them.
+
+        The list describes what the tuner can be sent to, so it is the same on
+        every entity of a gateway.
+        """
+        return [_label for _frequency, _name, _label in station_entries(self.radio_stations)]
+
+    @property
+    def selected_station(self):
+        """Label of the station the source is on, `None` when it is unlisted."""
+        return station_label(self.frequency, self.radio_stations)
+
+    async def select_station(self, label: str) -> None:
+        """Tune the source to the station labelled `label`.
+
+        The tuner only goes to a frequency by having it written into one of its
+        fifteen presets, so this overwrites the same scratch preset every time —
+        the `tuning_preset` option of the gateway, 15 by default. The preset
+        number in the frame is 0-based, hence the `- 1`; see
+        :func:`sound_diffusion.set_frequency`.
+
+        The bus echoes the new tuning about 250 ms later, which the optimistic
+        refresh only hides. Both the frequency and the preset are recorded, so
+        that echo says nothing new and the entities are written once.
+        """
+        _frequency = next(
+            (_frequency for _frequency, _name, _label in station_entries(self.radio_stations) if _label == label),
+            None,
+        )
+        if _frequency is None:
+            raise ServiceValidationError(f"`{label}` is not a station of this gateway's table.")
+
+        _preset = self.tuning_preset
+        self._gateway.refresh_sound_source(
+            SourceFrequencyStation(
+                source=self._source,
+                modulation=MODULATION_FM,
+                frequency=_frequency,
+                station=_preset,
+            )
+        )
+        await self._gateway.send(OWNCommand(set_frequency(self._source, _frequency, _preset - 1)))
 
 
 class MyHOMETunerEntity(MyHOMEEntity):
@@ -121,9 +228,14 @@ class MyHOMETunerEntity(MyHOMEEntity):
         return self._gateway_handler.is_connected
 
     @property
+    def _tuner_state(self) -> TunerState:
+        """The source this entity reads, and what can be done to it."""
+        return TunerState(self._hass, self._gateway_handler, self._source)
+
+    @property
     def _tuner(self) -> dict:
         """Tuning information of this source, shared with its amplifiers."""
-        return self._hass.data[DOMAIN][self._gateway_handler.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(self._source, {})
+        return self._tuner_state.store
 
     async def _command(self, frame: str) -> None:
         """Send a frame to the gateway."""
