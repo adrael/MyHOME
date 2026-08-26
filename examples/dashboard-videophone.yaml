@@ -1,0 +1,69 @@
+# A "Front gate" card for a video door entry panel (WHO=8).
+#
+# Requires Home Assistant 2024.10 or later for the `sections` view and the
+# `heading` card; the picture-glance, entities and button cards are much older.
+#
+# Paste the `- title: Front gate` item below INTO the `views:` list your
+# dashboard already has ("Edit dashboard" > 3-dot menu > "Raw configuration
+# editor"). Do not paste the whole file over the editor: that would drop your
+# other views.
+#
+# Entity ids follow the `name:` of the panel in `myhome.yaml`. A panel named
+# "Front gate" gives:
+#   camera.front_gate_camera            the snapshot (only if a camera_password is set)
+#   button.front_gate_open              opens the gate strike
+#   event.front_gate_doorbell           fires `ring` when the bell is pressed
+#   binary_sensor.front_gate_call_in_progress   on during a call
+# Rename them below to match your panel.
+#
+# The camera is live only during a call or an auto-on, and a snapshot opens a
+# session first; outside a call it is a black frame. Trigger a notification with
+# a picture from an automation on `event.front_gate_doorbell` — see the README.
+
+views:
+  - title: Front gate
+    path: front-gate
+    icon: mdi:gate
+    type: sections
+    max_columns: 2
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Front gate
+            heading_style: title
+            icon: mdi:doorbell-video
+          # The camera, with the Open button laid over it. Tapping the camera
+          # opens its more-info dialog (the live view); the strike icon opens
+          # the gate. Drop this card entirely if the panel has no camera.
+          - type: picture-glance
+            title: Front gate
+            camera_image: camera.front_gate_camera
+            camera_view: auto
+            entities:
+              - entity: button.front_gate_open
+                icon: mdi:gate-open
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.front_gate_open
+              - entity: binary_sensor.front_gate_call_in_progress
+          - type: entities
+            state_color: true
+            entities:
+              - entity: event.front_gate_doorbell
+                name: Doorbell
+              - entity: binary_sensor.front_gate_call_in_progress
+                name: Call in progress
+          # A plain Open button, for a panel with no camera or as a second way
+          # in. It pulses the strike: energise, then release.
+          - type: button
+            name: Open the gate
+            icon: mdi:gate-open
+            entity: button.front_gate_open
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.front_gate_open

@@ -533,10 +533,117 @@ A short FAQ of what surprises people first:
 
 ### Tests
 
-The WHO=22 parser, the frame builders, the configuration schema and the gateway
-dispatch are covered by plain pytest, with Home Assistant stubbed:
+The WHO=22 and WHO=8 parsers, the frame builders, the configuration schema and
+the gateway dispatch are covered by plain pytest, with Home Assistant stubbed:
 
 ```sh
 pip install -r requirements-dev.txt
 pytest
 ```
+
+## Video door entry (WHO=8)
+
+A BTicino/Legrand video door entry system (WHO=8) exposed as four standard Home
+Assistant entities per entrance panel. **Verified on hardware** (gateway F454,
+entrance panel 20, indoor unit 21, gate strike on activation address 20,
+2026-08-26): the doorbell ring, the auto-on, the session end and the gate-open
+echo were all seen on the bus, and the web control that opens the gate put
+`*8*19*20##` on it. Everything but the camera wiring through Home Assistant is
+confirmed end to end; see "Verified on hardware" below for what is not.
+
+Neither OWNd 0.7.48 nor this integration used to model WHO=8: the frames reached
+the listener as raw text and were logged as *Ignoring unsupported WHO*. They now
+feed these entities **when — and only when — a `video_door_entry:` block is
+configured**. On an installation without one, nothing changes: WHO 6, 7 and 8
+stay quiet debug lines.
+
+### Entities
+
+Per entrance panel, keyed `8-<entrance_address>`:
+
+- **`event.<name>_doorbell`** — an `event` entity, device class `doorbell`,
+  firing a single `ring` event each time the bell is pressed. This is the one to
+  trigger automations on; see the example below.
+- **`button.<name>_open`** — pulses the gate strike open (`*8*19*<addr>##` then
+  the release `*8*20*<addr>##`).
+- **`binary_sensor.<name>_call_in_progress`** — device class `running`, on from
+  the ring until the bus reports the session ended, with a safety timeout
+  (`call_timeout`, 60 s) in case the end is never sent.
+- **`camera.<name>_camera`** — a still from the panel's own `telecamera.php`,
+  created only when a `camera_password` is set. The panel's camera is live only
+  during a call or an auto-on, so a snapshot opens a video session first; it is
+  taken at most once every two seconds, since the panel saturates under load.
+
+A ring (`*8*1#1#…`) and an **auto-on** (`*8*1#5#…`, someone looking at the
+camera) look alike and mean opposite things: only the ring rings. The panel
+address travels in a separate caller-id frame, so a ring cannot be tied to one
+panel — on the usual single-panel install it reaches the one that is there.
+
+### Configuration
+
+Under a gateway, next to `media_player:` and the others:
+
+```yaml
+# myhome.yaml
+video_door_entry:
+  entrance_panel:                # the device key; one block per panel
+    name: "Front gate"
+    entrance_address: 20         # entrance panel (EP) address, default 20
+    lock_address: 20             # gate-strike activation address, default = entrance_address
+    camera_where: 4000           # 4000 + camera number, default 4000
+    camera_password: "0123456789abcdef0123456789abcdef"   # in clear or MD5 of the OPEN bus password; omit to skip the camera
+    camera_host: 192.168.1.17    # optional, default = the gateway host
+    verify_ssl: false            # the panel serves the snapshot with a self-signed cert
+    call_timeout: 60             # seconds before the call sensor gives up on a missing session end
+```
+
+Nothing here is baked into the code: every address, the camera password and the
+host come from the file. `camera_password` is the value the panel's own web page
+sends as `CAM_PASSWD` — usually the MD5 of the OPEN bus password. Keep it in
+`secrets.yaml` and reference it with `camera_password: !secret f454_cam_password`.
+
+### Example automation — ring to a phone with a snapshot
+
+An `event` entity fires by bumping its state, so trigger on a state change and
+attach the camera image:
+
+```yaml
+automation:
+  - alias: Doorbell ring notification
+    trigger:
+      - platform: state
+        entity_id: event.front_gate_doorbell
+    condition: "{{ trigger.to_state.state not in ['unknown', 'unavailable'] }}"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          message: "Someone at the front gate"
+          data:
+            image: "/api/camera_proxy/camera.front_gate_camera"
+```
+
+### Dashboard
+
+[`examples/dashboard-videophone.yaml`](examples/dashboard-videophone.yaml) is a
+ready-to-paste card: the camera as a picture-glance with the Open button on it,
+the doorbell event and the call-in-progress sensor below. Entity ids follow the
+`name:` of the panel, exactly as the amplifiers do.
+
+### Limitations & verified on hardware
+
+- **No audio, no conversation.** The F454 carries no two-way audio to Home
+  Assistant; this integration rings, shows a picture and opens the gate, and
+  that is all. Talking to whoever rang is done at the indoor unit.
+- **The camera is live only during a session.** Outside a call or an auto-on the
+  panel returns a black ~1.2 KB frame. The camera entity opens a session before
+  each snapshot, but a snapshot taken with nobody there is still black.
+- **Do not run several sending workers with the gate button.** The two open
+  frames (energise, release) are queued in order and, with the default single
+  `command_worker_count`, leave the gateway in order. Configure more workers and
+  the order is no longer guaranteed, which can leave the strike energised.
+- **Verified on hardware**: the ring / auto-on / caller-id / session-end frames,
+  and that `*8*19*20##` opens the strike (the web control produced it on the
+  bus). **Not yet verified from Home Assistant**: that pressing the Open button
+  actually drives the gate, and that a snapshot returns a live frame during a
+  call — both are *read from the protocol*, not exercised through this
+  integration.
