@@ -228,7 +228,7 @@ class MyHOMEDoorCamera(MyHOMEEntity, Camera):
                 async with _session.get(
                     f"https://{self._host}/telecamera.php",
                     params={"CAM_PASSWD": self._camera_password},
-                    timeout=aiohttp.ClientTimeout(total=8),
+                    timeout=aiohttp.ClientTimeout(total=5),
                 ) as _response:
                     _response.raise_for_status()
                     self._last_image = await _response.read()

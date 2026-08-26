@@ -153,7 +153,7 @@ def test_the_request_carries_the_password_as_a_param_and_a_timeout(monkeypatch):
     assert _url == f"https://{HOST}/telecamera.php"
     assert _kwargs["params"] == {"CAM_PASSWD": PASSWORD}
     assert isinstance(_kwargs["timeout"], ClientTimeout)
-    assert _kwargs["timeout"].total == 8
+    assert _kwargs["timeout"].total == 5
 
 
 # --------------------------------------------------------------------------- #
@@ -213,6 +213,10 @@ def test_the_password_is_never_logged(monkeypatch, caplog):
     interpolating the exception (or the URL) would spill it into
     `home-assistant.log`. The warning must name the failure without it.
     """
+    # Guard the premise: aiohttp's error string must actually embed the password,
+    # otherwise this test would pass vacuously if that behaviour ever changed.
+    assert PASSWORD in str(_client_response_error())
+
     _install_session(monkeypatch, FakeResponse(error=_client_response_error()))
     _cam = _make_camera()
 
