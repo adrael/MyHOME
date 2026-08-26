@@ -133,7 +133,8 @@ def test_radio_stations_are_stored_beside_the_platforms_not_among_them():
     )
     mac = list(result)[0]
     assert const.CONF_RADIO_STATIONS not in result[mac][const.CONF_PLATFORMS]
-    assert list(result[mac][const.CONF_PLATFORMS]) == ["media_player"]
+    # `number` and `button` are the tuner the amplifier listens to, derived.
+    assert list(result[mac][const.CONF_PLATFORMS]) == ["media_player", "number", "button"]
     assert result[mac][const.CONF_RADIO_STATIONS] == {10600: "SUD RADIO"}
 
 
@@ -186,7 +187,7 @@ def test_tuning_preset_is_stored_beside_the_platforms_not_among_them():
     result = _gateway(tuning_preset=3)
 
     assert const.CONF_TUNING_PRESET not in result[const.CONF_PLATFORMS]
-    assert list(result[const.CONF_PLATFORMS]) == ["media_player"]
+    assert list(result[const.CONF_PLATFORMS]) == ["media_player", "number", "button"]
 
 
 def test_a_gateway_without_amplifiers_gets_no_extra_platform():
@@ -195,6 +196,81 @@ def test_a_gateway_without_amplifiers_gets_no_extra_platform():
 
     assert const.CONF_TUNING_PRESET not in result[mac][const.CONF_PLATFORMS]
     assert result[mac][const.CONF_TUNING_PRESET] == 15
+# --------------------------------------------------------------------------- #
+# The tuner devices derived out of the amplifiers
+# --------------------------------------------------------------------------- #
+
+
+def _amplifiers(**sources):
+    """A gateway whose amplifiers listen to the sources given, by device key."""
+    return validate.config_schema(
+        {
+            "house": {
+                "mac": MAC,
+                "media_player": {_key: {"where": f"3#{_index + 2}#1", "name": _key.title(), "source": _source} for _index, (_key, _source) in enumerate(sources.items())},
+            }
+        }
+    )[MAC][const.CONF_PLATFORMS]
+
+
+def test_a_tuner_device_is_derived_for_the_source_of_the_amplifiers():
+    _platforms = _amplifiers(kitchen=1, bedroom=1)
+
+    assert list(_platforms["number"]) == ["22-2#1"]
+    assert _platforms["number"]["22-2#1"][const.CONF_WHO] == "22"
+    assert _platforms["number"]["22-2#1"][const.CONF_WHERE] == "2#1"
+    assert _platforms["number"]["22-2#1"][const.CONF_SOURCE] == 1
+    assert _platforms["number"]["22-2#1"]["name"] == "Tuner FM"
+    assert _platforms["number"]["22-2#1"][const.CONF_ENTITIES] == {}
+
+
+def test_the_device_id_is_the_one_the_sound_diffusion_helper_builds():
+    _platforms = _amplifiers(kitchen=1)
+
+    assert list(_platforms["number"]) == [sound_diffusion.tuner_device_id(1)]
+
+
+def test_one_tuner_device_per_distinct_source_however_many_amplifiers():
+    _platforms = _amplifiers(kitchen=1, bedroom=2, bathroom=2)
+
+    assert sorted(_platforms["number"]) == ["22-2#1", "22-2#2"]
+    assert [_platforms["number"][_device]["name"] for _device in sorted(_platforms["number"])] == ["Tuner FM 1", "Tuner FM 2"]
+
+
+def test_the_tuner_is_declared_on_both_platforms_it_spreads_over():
+    _platforms = _amplifiers(kitchen=1)
+
+    assert "22-2#1" in _platforms["number"]
+    assert "22-2#1" in _platforms["button"]
+    # A device dict of its own per platform: `button.py` deletes its own on
+    # unload, and must not empty the `number` platform on its way out.
+    assert _platforms["number"]["22-2#1"] is not _platforms["button"]["22-2#1"]
+
+
+def test_a_gateway_without_amplifiers_gets_no_tuner_platform():
+    _platforms = validate.config_schema({"house": {"mac": MAC, "light": {"lamp": {"where": "12", "name": "Lamp"}}}})[MAC][const.CONF_PLATFORMS]
+
+    assert "number" not in _platforms
+    # `button` is there, but for the lock buttons of the light.
+    assert all(_device[const.CONF_WHO] != "22" for _device in _platforms["button"].values())
+
+
+def test_the_lock_buttons_of_a_light_are_not_taken_for_a_tuner():
+    _platforms = validate.config_schema(
+        {
+            "house": {
+                "mac": MAC,
+                "light": {"lamp": {"where": "12", "name": "Lamp"}},
+                "media_player": {"ampli": {"where": "3#7#1", "name": "Radio"}},
+            }
+        }
+    )[MAC][const.CONF_PLATFORMS]
+
+    assert sorted(_platforms["button"]) == ["1-12", "22-2#1"]
+    assert _platforms["button"]["1-12"][const.CONF_WHO] == "1"
+    assert _platforms["button"]["22-2#1"][const.CONF_WHO] == "22"
+
+
 # --------------------------------------------------------------------------- #
 # The examples of the README have to validate
 # --------------------------------------------------------------------------- #

@@ -31,9 +31,10 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.components.climate import DOMAIN as CLIMATE
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER
+from homeassistant.components.number import DOMAIN as NUMBER
 from homeassistant.const import CONF_NAME, CONF_MAC
 
-from .sound_diffusion import DEFAULT_TUNING_PRESET, MAX_STATION_PRESET
+from .sound_diffusion import DEFAULT_TUNING_PRESET, MAX_STATION_PRESET, tuner_device_id
 
 from .const import (
     CONF_PLATFORMS,
@@ -265,7 +266,47 @@ class MyHomeConfigSchema(Schema):
                         if not value[CONF_WHERE].startswith("#"):
                             _rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS][BUTTON][key] = value
 
+            _add_tuner_devices(_rekeyed_data[data[gateway][CONF_MAC]][CONF_PLATFORMS])
+
         return _rekeyed_data
+
+
+def _add_tuner_devices(platforms: dict) -> None:
+    """Derive one tuner device per source the configured amplifiers listen to.
+
+    Nothing declares a tuner in the configuration file: it is the box behind the
+    amplifiers, and the `source` option of each of them names it. So the devices
+    are built here, which is also what gets `number` and `button` into
+    `CONF_PLATFORMS` — the keys `__init__.py` forwards to
+    `async_forward_entry_setups` and unloads again.
+
+    A device per platform rather than one shared between the two: `button.py`
+    deletes its own on unload, and it must not empty the `number` platform on
+    its way out.
+    """
+    if MEDIA_PLAYER not in platforms:
+        return
+
+    _sources = sorted({_amplifier[CONF_SOURCE] for _amplifier in platforms[MEDIA_PLAYER].values()})
+    platforms.setdefault(NUMBER, {})
+    platforms.setdefault(BUTTON, {})
+
+    for _source in _sources:
+        # One source is the common case, and "Tuner FM" reads better than
+        # "Tuner FM 1" in front of the single tuner of a house.
+        _name = "Tuner FM" if len(_sources) == 1 else f"Tuner FM {_source}"
+        for _platform in (NUMBER, BUTTON):
+            platforms[_platform][tuner_device_id(_source)] = {
+                CONF_WHO: "22",
+                CONF_WHERE: f"2#{_source}",
+                CONF_SOURCE: _source,
+                CONF_NAME: _name,
+                CONF_ENTITY_NAME: None,
+                CONF_ICON: None,
+                CONF_MANUFACTURER: None,
+                CONF_DEVICE_MODEL: None,
+                CONF_ENTITIES: {},
+            }
 
 
 class MyHomeDeviceSchema(Schema):

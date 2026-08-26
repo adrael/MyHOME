@@ -41,6 +41,21 @@ MAX_STATION_PRESET = 15
 #: with the station buttons keep their place.
 DEFAULT_TUNING_PRESET = MAX_STATION_PRESET
 
+#: FM band, in hundredths of MHz: the range the `number` entity offers.
+#:
+#: Band II as it is allocated in Europe. The hardware session of 2026-08-26
+#: actually drove the tuner from 87.7 to 107.3, every frequency in between
+#: accepted; the two ends of the band itself were not tried, and the tuner is
+#: the one that decides what it does with them.
+MIN_FREQUENCY = 8750
+MAX_FREQUENCY = 10800
+
+#: Channel spacing offered by the `number` entity, in hundredths of MHz: 50 kHz,
+#: the raster the frequency table itself is written on. Every frequency of the
+#: hardware session sits on 100 kHz, so the half step was not exercised; the
+#: tuner rounds to whatever it can reach and reports it back.
+FREQUENCY_STEP = 5
+
 #: Modulation values carried by dimensions 5 and 11 (Legrand WHO_22 v1.1).
 MODULATION_FM = 1
 MODULATION_AM_LW = 2
@@ -104,6 +119,17 @@ def amplifier_device_id(area: int, point: int) -> str:
     which is ``f"{who}-{where}"`` with the WHERE normalised to ``3#<area>#<point>``.
     """
     return f"22-3#{area}#{point}"
+
+
+def tuner_device_id(source: int) -> str:
+    """Key the device of a source (a tuner) is stored under in ``hass.data``.
+
+    Built the same way as :func:`amplifier_device_id`, out of the WHERE of a
+    source: ``2#<source>``. Unlike the amplifiers, no line of the configuration
+    file declares it — `validate.py` derives one per distinct source of the
+    amplifiers that are configured.
+    """
+    return f"22-2#{source}"
 
 
 # --------------------------------------------------------------------------- #
@@ -545,14 +571,25 @@ def station_previous_from_amplifier(area: int, point: int) -> str:
 def frequency_seek_up(source: int = 1, step: Optional[int] = None) -> str:
     """Seek up, automatically (``step`` omitted) or by a given frequency step.
 
-    Spec form (§3.1.5), **not verified on hardware**. Without a step the WHAT
-    parameter is empty, as in :func:`station_next`.
+    Spec form (§3.1.5). The automatic form is verified on hardware 2026-08-26:
+    ``*22*5#*2#1##`` moved the tuner to the next station it caught, and answered
+    with ``*#22*5#2#1*5*1*10730##`` — **dimension 5 alone**, no dimension 11 and
+    no dimension 6, so the preset the tuner was on is left behind. That is what
+    ``gateway.update_sound_source`` drops it for.
+
+    Passing a ``step`` is untried; without one the WHAT parameter is empty, as in
+    :func:`station_next`, which ``OWNCommand`` flags ``is_valid = False``.
     """
     return f"*22*5#{step if step is not None else ''}*2#{source}##"
 
 
 def frequency_seek_down(source: int = 1, step: Optional[int] = None) -> str:
-    """Seek down. Spec form (§3.1.5), see :func:`frequency_seek_up`."""
+    """Seek down. Spec form (§3.1.5), see :func:`frequency_seek_up`.
+
+    Verified on hardware the same day, and it says more than seeking up does:
+    ``*22*6#*2#1##`` answered with dimension 5 and then, the frequency having
+    fallen back onto a stored preset, ``*#22*5#2#1*11*1*10680*15##``.
+    """
     return f"*22*6#{step if step is not None else ''}*2#{source}##"
 
 

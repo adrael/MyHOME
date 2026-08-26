@@ -493,3 +493,24 @@ def test_every_station_label_is_unique():
     """A duplicate label would make one of the two unreachable from a dashboard."""
     _labels = [_label for _frequency, _name, _label in sd.station_entries()]
     assert len(set(_labels)) == len(_labels)
+
+
+def test_tuner_device_id():
+    assert sd.tuner_device_id(1) == "22-2#1"
+    assert sd.tuner_device_id(4) == "22-2#4"
+
+
+def test_the_fm_band_is_the_one_the_number_entity_offers():
+    assert sd.MIN_FREQUENCY == 8750
+    assert sd.MAX_FREQUENCY == 10800
+    assert sd.FREQUENCY_STEP == 5
+    # Every station of the built-in table sits inside the band and on its raster.
+    for _frequency in sd.STATIONS:
+        assert sd.MIN_FREQUENCY <= _frequency <= sd.MAX_FREQUENCY
+        assert _frequency % sd.FREQUENCY_STEP == 0
+
+
+def test_the_band_holds_the_frequencies_the_hardware_session_reached():
+    """87.7 to 107.3 were driven on the bus on 2026-08-26."""
+    assert sd.MIN_FREQUENCY <= 8770
+    assert sd.MAX_FREQUENCY >= 10730

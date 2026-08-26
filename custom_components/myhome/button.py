@@ -29,6 +29,7 @@ from .const import (
     DOMAIN,
 )
 from .myhome_device import MyHOMEEntity
+from .tuner import tuner_buttons
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -41,6 +42,21 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     ][PLATFORM]
 
     for _button in _configured_buttons.keys():
+        if _configured_buttons[_button][CONF_WHO] == "22":
+            # A sound diffusion tuner, derived by `validate.py` out of the
+            # sources the amplifiers listen to. It has no command to lock.
+            _buttons.extend(
+                tuner_buttons(
+                    hass=hass,
+                    device_id=_button,
+                    device=_configured_buttons[_button],
+                    gateway=hass.data[DOMAIN][config_entry.data[CONF_MAC]][
+                        CONF_ENTITY
+                    ],
+                )
+            )
+            continue
+
         _disable_button = DisableCommandButtonEntity(
             hass=hass,
             platform=PLATFORM,
@@ -88,10 +104,15 @@ async def async_unload_entry(hass, config_entry):
         CONF_PLATFORMS
     ][PLATFORM]
 
-    for _button in _configured_buttons.keys():
+    # Iterated over a copy: the loop is deleting out of the dict it walks, which
+    # raises on the second key. Nothing reached this before the tuner had the
+    # `button` platform forwarded for `media_player` only installations.
+    for _button in list(_configured_buttons):
         del hass.data[DOMAIN][config_entry.data[CONF_MAC]][CONF_PLATFORMS][PLATFORM][
             _button
         ]
+
+    return True
 
 
 class DisableCommandButtonEntity(ButtonEntity, MyHOMEEntity):
