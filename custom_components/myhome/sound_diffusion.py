@@ -293,10 +293,15 @@ class SourceFrequencyStation:
 
 @dataclass(frozen=True)
 class SourceStation:
-    """``*#22*5#2#<s>*6*<station>##`` — dimension 6."""
+    """``*#22*5#2#<s>*6*<station>##`` — dimension 6.
+
+    ``station`` is optional because the integration builds one of these with no
+    station at all: a seek button forgets the preset it is leaving, and this is
+    the event that says so. The bus never sends that form.
+    """
 
     source: int
-    station: int
+    station: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -574,8 +579,11 @@ def frequency_seek_up(source: int = 1, step: Optional[int] = None) -> str:
     Spec form (§3.1.5). The automatic form is verified on hardware 2026-08-26:
     ``*22*5#*2#1##`` moved the tuner to the next station it caught, and answered
     with ``*#22*5#2#1*5*1*10730##`` — **dimension 5 alone**, no dimension 11 and
-    no dimension 6, so the preset the tuner was on is left behind. That is what
-    ``gateway.update_sound_source`` drops it for.
+    no dimension 6, so the preset the tuner was on is left behind and nothing on
+    the bus ever says so. That is what ``tuner.MyHOMETunerButton.async_press``
+    drops it for, on the press rather than on the frame: a preset *step* is
+    answered by a dimension 5 too, and reading that one as a scan had every
+    station change blink the preset away and back.
 
     Passing a ``step`` is untried; without one the WHAT parameter is empty, as in
     :func:`station_next`, which ``OWNCommand`` flags ``is_valid = False``.

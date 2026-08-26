@@ -1032,10 +1032,63 @@ SCAN_DOWN = [
 ]
 
 
-def test_a_scan_that_moves_the_frequency_drops_the_preset(installation):
-    """S1: the tuner jumped to 107.3 and never said which slot it is on now."""
+def preset_step(frequency: int, station: int) -> list:
+    """The two frames a preset step answers with, in the order the bus sends them.
+
+    Dimension 5 with the frequency it landed on and, about 20 ms later,
+    dimension 11 with the same frequency and the slot number. The frequencies
+    below are taken from the built-in station table rather than from a
+    transcript; the *shape* is what these tests are about.
+    """
+    return [
+        f"*#22*5#2#1*5*1*{frequency}##",
+        f"*#22*5#2#1*11*1*{frequency}*{station}##",
+    ]
+
+
+#: The fifteen slots of the tuner, stepped through one **next preset** at a time.
+PRESETS = [
+    (8770, 1),
+    (8850, 2),
+    (8970, 3),
+    (9130, 4),
+    (9220, 5),
+    (9350, 6),
+    (9430, 7),
+    (9530, 8),
+    (9670, 9),
+    (9730, 10),
+    (9820, 11),
+    (9960, 12),
+    (10080, 13),
+    (10240, 14),
+    (10420, 15),
+]
+
+
+def presets_seen(installation, frames, source=1) -> list:
+    """Replay `frames` one at a time, reading the preset back after each.
+
+    A preset that blinks — a value, then `None`, then a value again — is what a
+    dashboard shows as a row going blank, and it is only visible between two
+    frames of the same burst.
+    """
+    _seen = []
+    for _frame in frames:
+        installation.replay([_frame])
+        _seen.append(installation.tuner[source].get("station"))
+    return _seen
+
+
+def test_a_scan_up_commanded_here_drops_the_preset_before_the_bus_answers(installation):
+    """S1: the tuner jumps and never says which slot it is on now, so we drop it."""
     installation.replay(["*#22*5#2#1*11*1*10680*15##"])
     assert installation.tuner[1]["station"] == 15
+
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+
+    assert installation.tuner[1]["station"] is None
+    assert installation.handler.sent == ["*22*5#*2#1##"]
 
     installation.replay(SCAN_UP)
 
@@ -1043,11 +1096,25 @@ def test_a_scan_that_moves_the_frequency_drops_the_preset(installation):
     assert installation.tuner[1]["station"] is None
 
 
+def test_a_scan_down_commanded_here_drops_the_preset_too(installation):
+    """S2: dropped on the press, and put back by the dimension 11 that follows."""
+    installation.replay(["*#22*5#2#1*11*1*10730*3##"])
+
+    asyncio.run(installation.tuner_entity("seek_down").async_press())
+    assert installation.tuner[1]["station"] is None
+
+    installation.replay(SCAN_DOWN)
+
+    assert installation.tuner[1]["frequency"] == 10680
+    assert installation.tuner[1]["station"] == 15
+
+
 def test_a_stale_preset_is_left_out_of_the_attributes(installation):
     installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10680*15##"])
     _entity = installation.entity(2, 2)
     assert _entity.extra_state_attributes["preset"] == 15
 
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
     installation.replay(SCAN_UP)
 
     assert "preset" not in _entity.extra_state_attributes
@@ -1058,15 +1125,71 @@ def test_a_stale_preset_is_left_out_of_the_attributes(installation):
     assert _entity.extra_state_attributes["station_name"] == "BFM BUSINESS"
 
 
-def test_a_scan_that_lands_on_a_preset_puts_the_number_back(installation):
-    """S2: dimension 5, then dimension 11 when the frequency falls on a slot."""
-    installation.replay(SCAN_UP)
-    assert installation.tuner[1]["station"] is None
+def test_a_seek_button_writes_the_amplifiers_once(installation):
+    """The optimistic drop is a state change like any other: one write, not two."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
 
-    installation.replay(SCAN_DOWN)
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
 
-    assert installation.tuner[1]["frequency"] == 10680
-    assert installation.tuner[1]["station"] == 15
+    assert all(_entity.written_states == 1 for _entity in installation.entities.values())
+
+
+def test_a_seek_button_on_a_tuner_nobody_heard_from_writes_nothing(installation):
+    """Nothing to drop: the store has no preset to blank out."""
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+
+    assert installation.tuner[1].get("station") is None
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+    assert installation.handler.sent == ["*22*5#*2#1##"]
+
+
+def test_a_preset_step_never_blanks_the_preset(installation):
+    """T6: the burst is dimension 5 then dimension 11, and 5 must not blank 11.
+
+    The bus reports the new frequency about 20 ms before it reports the slot.
+    Reading a moved frequency as "the preset is unknown" made every preset step
+    blink the row: a number, nothing, the next number.
+    """
+    installation.replay(["*#22*5#2#1*11*1*10680*14##"])
+
+    asyncio.run(installation.tuner_entity("next_preset").async_press())
+    _seen = presets_seen(installation, preset_step(10730, 15))
+
+    assert None not in _seen
+    assert _seen == [14, 15]
+    assert installation.tuner[1]["frequency"] == 10730
+
+
+def test_stepping_through_the_fifteen_presets_never_blanks_the_preset(installation):
+    """N01..N15: fifteen **next preset** steps in a row, one burst each."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    _seen = []
+
+    for _frequency, _station in PRESETS:
+        asyncio.run(installation.tuner_entity("next_preset").async_press())
+        _seen.extend(presets_seen(installation, preset_step(_frequency, _station)))
+
+    assert None not in _seen
+    assert _seen[1::2] == [_station for _frequency, _station in PRESETS]
+
+
+def test_a_preset_step_writes_each_amplifier_at_most_twice(installation):
+    """One write for the frequency, one for the slot: the burst carries two frames."""
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+
+    for _frequency, _station in PRESETS:
+        for _entity in installation.entities.values():
+            _entity.written_states = 0
+
+        asyncio.run(installation.tuner_entity("next_preset").async_press())
+        installation.replay(preset_step(_frequency, _station))
+
+        assert all(_entity.written_states <= 2 for _entity in installation.entities.values())
 
 
 def test_a_dimension_5_on_the_frequency_we_hold_keeps_the_preset(installation):
@@ -1081,8 +1204,25 @@ def test_a_dimension_5_on_the_frequency_we_hold_keeps_the_preset(installation):
     assert all(_entity.written_states == 0 for _entity in installation.entities.values())
 
 
+def test_a_scan_at_the_wall_leaves_the_preset_it_left_behind(installation):
+    """The residual of dropping the preset on the press rather than on the frame.
+
+    Nobody tells us a scan happened until the tuner reports a slot again, so a
+    seek done at a wall control shows the slot it started from for as long as it
+    takes the tuner to sit on one — a dimension 6 or a dimension 11.
+    """
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+
+    installation.replay(SCAN_UP)
+
+    assert installation.tuner[1]["frequency"] == 10730
+    assert installation.tuner[1]["station"] == 15
+
+
 def test_a_dimension_6_puts_the_preset_back_on_its_own(installation):
-    installation.replay(["*#22*5#2#1*11*1*10680*15##"] + SCAN_UP)
+    installation.replay(["*#22*5#2#1*11*1*10680*15##"])
+    asyncio.run(installation.tuner_entity("seek_up").async_press())
+    installation.replay(SCAN_UP)
     assert installation.tuner[1]["station"] is None
 
     installation.replay(["*#22*2#1*6*3##"])
@@ -1094,7 +1234,7 @@ def test_a_dimension_6_puts_the_preset_back_on_its_own(installation):
 def test_the_first_frequency_of_an_unknown_tuner_carries_no_preset(installation):
     installation.replay(["*#22*5#2#1*5*1*10730##"])
     assert installation.tuner[1]["frequency"] == 10730
-    assert installation.tuner[1]["station"] is None
+    assert installation.tuner[1].get("station") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -1142,7 +1282,7 @@ def test_the_buttons_share_the_device_of_the_number(installation):
         assert _button._attr_device_info["identifiers"] == _frequency._attr_device_info["identifiers"]
         assert _button._attr_unique_id == f"{MAC}-22-2#1-{_key}"
 
-    assert [installation.tuner_entity(_key)._attr_name for _key, _, _, _ in tuner.TUNER_BUTTONS] == [
+    assert [installation.tuner_entity(_key)._attr_name for _key, *_ in tuner.TUNER_BUTTONS] == [
         "Seek up",
         "Seek down",
         "Next preset",

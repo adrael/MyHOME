@@ -40,6 +40,7 @@ from .const import (
 )
 from .myhome_device import MyHOMEEntity
 from .sound_diffusion import (
+    SourceStation,
     frequency_seek_down,
     frequency_seek_up,
     station_next,
@@ -142,7 +143,7 @@ class MyHOMETunerButton(MyHOMETunerEntity, ButtonEntity):
     one this button sends is the `frame` builder it was handed.
     """
 
-    def __init__(self, hass, entity_key: str, entity_name: str, icon: str, frame, **kwargs):
+    def __init__(self, hass, entity_key: str, entity_name: str, icon: str, frame, drops_preset: bool = False, **kwargs):
         super().__init__(
             hass=hass,
             entity_key=entity_key,
@@ -152,9 +153,24 @@ class MyHOMETunerButton(MyHOMETunerEntity, ButtonEntity):
         )
         self._attr_icon = icon
         self._frame = frame
+        self._drops_preset = drops_preset
 
     async def async_press(self) -> None:
-        """Press the button."""
+        """Press the button, dropping the preset first when this one scans.
+
+        Verified on hardware 2026-08-26: an automatic scan upwards
+        (`*22*5#*2#1##`) moves the tuner to the next station it catches and
+        answers `*#22*5#2#1*5*1*10730##` — dimension 5 alone, no dimension 11
+        and no dimension 6, so the slot it was on is left behind and never
+        mentioned again. Nothing on the bus says so, which is why it is said
+        here: this press is the only moment the scan is known to have happened.
+
+        Optimistic like every other command of this integration, and recorded
+        before sending for the same reason — the entities show it at once. A
+        scan downwards puts the right number back when it falls onto a preset.
+        """
+        if self._drops_preset and self._tuner.get("station") is not None:
+            self._gateway_handler.refresh_sound_source(SourceStation(source=self._source, station=None))
         await self._command(self._frame(self._source))
 
 
@@ -162,11 +178,14 @@ class MyHOMETunerButton(MyHOMETunerEntity, ButtonEntity):
 #:
 #: `entity_key` ends up in the unique id and `entity_name` in the entity id, so
 #: neither can be changed without orphaning what is already in the registry.
+#:
+#: The last field says whether the button leaves the tuner off its preset: the
+#: two scans do, the two preset steps land on one and say which.
 TUNER_BUTTONS = (
-    ("seek_up", "Seek up", "mdi:magnify-plus-outline", frequency_seek_up),
-    ("seek_down", "Seek down", "mdi:magnify-minus-outline", frequency_seek_down),
-    ("next_preset", "Next preset", "mdi:skip-next", station_next),
-    ("previous_preset", "Previous preset", "mdi:skip-previous", station_previous),
+    ("seek_up", "Seek up", "mdi:magnify-plus-outline", frequency_seek_up, True),
+    ("seek_down", "Seek down", "mdi:magnify-minus-outline", frequency_seek_down, True),
+    ("next_preset", "Next preset", "mdi:skip-next", station_next, False),
+    ("previous_preset", "Previous preset", "mdi:skip-previous", station_previous, False),
 )
 
 
@@ -179,6 +198,7 @@ def tuner_buttons(hass, device_id: str, device: dict, gateway: MyHOMEGatewayHand
             entity_name=_name,
             icon=_icon,
             frame=_frame,
+            drops_preset=_drops_preset,
             name=device[CONF_NAME],
             device_id=device_id,
             who=device[CONF_WHO],
@@ -188,5 +208,5 @@ def tuner_buttons(hass, device_id: str, device: dict, gateway: MyHOMEGatewayHand
             model=device[CONF_DEVICE_MODEL],
             gateway=gateway,
         )
-        for _key, _name, _icon, _frame in TUNER_BUTTONS
+        for _key, _name, _icon, _frame, _drops_preset in TUNER_BUTTONS
     ]

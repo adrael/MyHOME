@@ -608,13 +608,18 @@ class MyHOMEGatewayHandler:
         Read back by every amplifier listening to that source, which is why an
         unchanged reading is worth nothing to them.
 
-        A dimension 5 landing on another frequency makes the preset we hold
-        stale, and it is dropped. Verified on hardware 2026-08-26: an automatic
-        scan upwards (`*22*5#*2#1##`) moves the tuner to the next station it
-        catches and reports **only** `*#22*5#2#1*5*1*10730##` — no dimension 11,
-        no dimension 6. Keeping the preset would have the entity claim the tuner
-        still sits on a slot it left. A scan downwards does emit dimension 11
-        when it falls back onto a preset, and that one puts the number back.
+        A dimension 5 landing on another frequency is **not** read as leaving
+        the preset behind, though a scan does exactly that. A preset step is
+        answered by a burst — dimension 5 with the new frequency, then dimension
+        11 with the slot about 20 ms later — so dropping the preset on the 5 had
+        every station change blink the number away and back. The preset is
+        dropped where the scan is known to have happened instead: the two seek
+        buttons clear it themselves before sending (`tuner.MyHOMETunerButton`).
+
+        What is left of it: a seek pressed at a wall control is invisible to us
+        until the tuner reports a slot again, and the preset shown until then is
+        the one it started from. A dimension 11 or a dimension 6 puts the right
+        one back — a scan downwards falling onto a preset emits one at once.
         """
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
         _before = dict(_source)
@@ -624,10 +629,6 @@ class MyHOMEGatewayHandler:
             _source["frequency"] = event.frequency
             _source["station"] = event.station
         elif isinstance(event, SourceFrequency):
-            if _source.get("frequency") != event.frequency:
-                # Compared before the overwrite, so "moved" is what the bus did,
-                # not what we just wrote.
-                _source["station"] = None
             _source["modulation"] = event.modulation
             _source["frequency"] = event.frequency
         elif isinstance(event, SourceStation):

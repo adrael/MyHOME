@@ -372,7 +372,7 @@ def test_the_documented_tuner_entity_ids_are_the_ones_the_code_produces():
         return platform + "." + re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", f"{_device_name} {entity_name}".lower())).strip("_")
 
     assert _slug("number", "Frequency") == "number.tuner_fm_frequency"
-    assert [_slug("button", _name) for _key, _name, _icon, _frame in tuner.TUNER_BUTTONS] == TUNER_ENTITIES[1:]
+    assert [_slug("button", _name) for _key, _name, *_ in tuner.TUNER_BUTTONS] == TUNER_ENTITIES[1:]
 
 
 def test_the_readme_documents_every_tuner_entity():

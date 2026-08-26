@@ -204,9 +204,10 @@ including that it does not turn any amplifier on.
 
 The two **seek** buttons are the tuner's own automatic scan, and they are the
 only control here that is not a preset. Seeking upwards reports the frequency it
-landed on and nothing else, so the `preset` attribute goes away until the tuner
-sits on a slot again (seeking downwards past one puts it back). That is the
-tuner, not the integration losing count.
+landed on and nothing else, so pressing either of them clears the `preset`
+attribute straight away and it stays away until the tuner sits on a slot again
+(seeking downwards past one puts it back). That is the tuner, not the
+integration losing count.
 
 The entities follow the gateway connection like the amplifiers do, and they are
 tuner-scoped throughout: the frequency is what the shared box is on, whether a
@@ -224,11 +225,12 @@ is added only when it is not FM (2 long wave, 3 medium wave, 4 short wave).
 Attributes without a value are left out, so an amplifier of a gateway whose
 tuner never answered carries only its addressing.
 
-`preset` disappears when the tuner moves off the slot it was on. Seeking upwards
+`preset` disappears when one of the seek buttons is pressed. Seeking upwards
 reports the new frequency and nothing else — verified on hardware — so the slot
-number we hold is stale and is dropped rather than shown as if it were still
-true. The frequency and the station name stay; the preset comes back on the next
-frame that carries one.
+number we hold would be stale, and it is dropped rather than shown as if it were
+still true. The frequency and the station name stay; the preset comes back on
+the next frame that carries one. A seek done at a *wall control* is invisible to
+us, so the preset shown until then is the one the tuner started from.
 
 What comes out of *this* amplifier is a different matter: `media_title`,
 `media_channel` and `media_content_type` are `None` unless it is playing.
@@ -325,9 +327,11 @@ Two consequences worth knowing:
   preset 15 lands on preset 1, which is why selecting a station spends the last
   slot by default.
 - **A scan says less than a preset step does.** Seeking upwards reports a
-  frequency and stops there, so the preset number we hold is stale and is
-  dropped rather than shown — see the `preset` attribute above. The band was
-  driven from 87.7 to 107.3 MHz, every frequency accepted.
+  frequency and stops there, so the preset number we hold is stale — see the
+  `preset` attribute above. A preset *step*, on the other hand, answers with a
+  frequency (dimension 5) and then its slot (dimension 11) about 20 ms later,
+  which is why the frequency alone is not read as "the preset is gone". The band
+  was driven from 87.7 to 107.3 MHz, every frequency accepted.
 
 The four frames the tuner buttons send (`*22*5#`, `*22*6#`, `*22*9#`, `*22*10#`,
 all addressed `*2#<source>##`) end on an empty WHAT parameter. OWNd builds them
@@ -426,7 +430,8 @@ A short FAQ of what surprises people first:
   station" and the `tuning_preset` option. Setting
   `number.tuner_fm_frequency` spends the same slot.
 - **The Preset row went blank after a seek.** The tuner left the slot it was on
-  and only reported a frequency; see "Tuner entities".
+  and only reports a frequency; see "Tuner entities". It comes back on the next
+  frame carrying a slot number.
 - **Sources 2 to 4 answer on the bus** and show up in a debug log. The
   amplifiers listening to source 1 ignore them.
 
