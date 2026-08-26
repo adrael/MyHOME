@@ -563,6 +563,22 @@ class MyHOMEGatewayHandler:
                 if isinstance(_device[CONF_ENTITIES][_entity], MyHOMEEntity):
                     _device[CONF_ENTITIES][_entity].handle_event(_event)
 
+    def refresh_sound_source(self, event) -> None:
+        """Record a tuning the integration just commanded, and show it at once.
+
+        The bus echoes a retuning about 250 ms later; recording it now is what
+        makes a station change feel immediate. Since the store then already holds
+        it, `update_sound_source` finds nothing new in the echo and the
+        amplifiers are written once, not twice.
+
+        Every amplifier of the gateway is handed the event, as `handle_event`
+        alone knows which source its entity is listening to.
+        """
+        if not self.update_sound_source(event):
+            return
+        for _entity in self._amplifier_entities():
+            _entity.handle_event(event)
+
     def update_sound_source(self, event) -> bool:
         """Record a source's tuning; answer whether it moved.
 

@@ -32,13 +32,13 @@ AMPLIFIERS = [
     (7, 1, "Radio Cuisine"),
     (2, 1, "Radio Suite"),
     (2, 2, "Radio Suite SDB"),
-    (3, 1, "Radio Bureau Julie"),
-    (3, 2, "Radio Bureau Julie SDB"),
+    (3, 1, "Radio Office 1"),
+    (3, 2, "Radio Office 1 Bathroom"),
     (4, 1, "Radio Gym"),
     (5, 1, "Radio Chambre Ami"),
     (5, 2, "Radio Chambre Ami SDB"),
-    (6, 1, "Radio Bureau Raph"),
-    (6, 2, "Radio Bureau Raph SDB"),
+    (6, 1, "Radio Office 2"),
+    (6, 2, "Radio Office 2 Bathroom"),
     (1, 1, "Radio Tablette"),
 ]
 
@@ -96,9 +96,9 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.status_requests.append(str(message))
 
 
-def configuration_file(amplifiers=None, source=1, radio_stations=None) -> str:
+def configuration_file(amplifiers=None, source=1, radio_stations=None, tuning_preset=None) -> str:
     """The `myhome.yaml` such an installation would hold."""
-    _lines = ["villa:", f'  mac: "{MAC}"', "  media_player:"]
+    _lines = ["house:", f'  mac: "{MAC}"', "  media_player:"]
     for _area, _point, _name in amplifiers if amplifiers is not None else AMPLIFIERS:
         _source = source(_area, _point) if callable(source) else source
         _lines.append(f'    ampli_{_area}_{_point}: {{ where: "3#{_area}#{_point}", name: "{_name}", source: {_source} }}')
@@ -106,6 +106,8 @@ def configuration_file(amplifiers=None, source=1, radio_stations=None) -> str:
         _lines.append("  radio_stations:" + (" {}" if not radio_stations else ""))
         for _frequency, _name in radio_stations.items():
             _lines.append(f'    "{_frequency}": "{_name}"')
+    if tuning_preset is not None:
+        _lines.append(f"  tuning_preset: {tuning_preset}")
     return "\n".join(_lines) + "\n"
 
 
@@ -116,8 +118,10 @@ class Installation:
     tests cannot drift away from what the integration is actually handed.
     """
 
-    def __init__(self, amplifiers=AMPLIFIERS, source=1, radio_stations=None):
-        self.data = {DOMAIN: validate.config_schema(yaml.safe_load(configuration_file(amplifiers, source, radio_stations)))}
+    def __init__(self, amplifiers=AMPLIFIERS, source=1, radio_stations=None, tuning_preset=None):
+        self.data = {
+            DOMAIN: validate.config_schema(yaml.safe_load(configuration_file(amplifiers, source, radio_stations, tuning_preset)))
+        }
 
         self.handler = FakeGateway(self)
         self.devices = self.data[DOMAIN][MAC][const.CONF_PLATFORMS]["media_player"]
@@ -821,3 +825,133 @@ def test_a_source_event_that_feeds_nothing_is_not_dispatched(installation):
 
     assert all(_entity.written_states == 0 for _entity in installation.entities.values())
     assert installation.entity(2, 2).state == PLAYING
+
+
+# --------------------------------------------------------------------------- #
+# Selecting a station
+# --------------------------------------------------------------------------- #
+
+
+def test_the_source_list_is_the_station_table_sorted_by_frequency(installation):
+    _entity = installation.entity(7, 1)
+
+    assert _entity.source_list == [_name for _frequency, _name in sorted(sound_diffusion.STATIONS.items())]
+    assert _entity.source_list[:2] == ["MOUV'", "RADIO CAMPUS"]
+
+
+def test_the_source_list_follows_the_gateway_station_table():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={"106.0": "MA RADIO", "97.3": "AUTRE"})
+    assert installation.entity(2, 2).source_list == ["AUTRE", "MA RADIO"]
+
+
+def test_an_empty_station_table_leaves_the_built_in_source_list():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={})
+    assert len(installation.entity(2, 2).source_list) == len(sound_diffusion.STATIONS)
+
+
+def test_selecting_a_station_writes_the_scratch_preset(installation):
+    """The frame's preset is 0-based, so the last preset, 15, is written as 14."""
+    _entity = installation.entity(7, 1)
+
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*8970*14##"]
+
+
+def test_selecting_a_station_uses_the_tuning_preset_of_the_gateway():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], tuning_preset=3)
+
+    asyncio.run(installation.entity(2, 2).async_select_source("FRANCE INTER"))
+
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*8970*2##"]
+    assert installation.entity(2, 2).extra_state_attributes["preset"] == 3
+
+
+def test_selecting_a_station_addresses_the_source_the_amplifier_listens_to():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], source=2)
+
+    asyncio.run(installation.entity(2, 2).async_select_source("NOSTALGIE"))
+
+    assert installation.handler.sent == ["*#22*5#2#2*#11*1*9730*14##"]
+
+
+def test_selecting_a_station_is_reflected_before_the_bus_answers(installation):
+    _entity = installation.entity(7, 1)
+    _entity.handle_event(sound_diffusion.AmplifierState(area=7, point=1, is_on=True, mmtype=4))
+    _entity.written_states = 0
+
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+
+    assert _entity.written_states == 1
+    assert installation.tuner[1] == {"modulation": 1, "frequency": 8970, "station": 15}
+    assert _entity.media_title == "89.7 MHz \u00b7 FRANCE INTER"
+    assert _entity.source == "FRANCE INTER"
+
+
+def test_the_echo_of_a_selection_says_nothing_new(installation):
+    """The optimistic refresh records the 1-based preset the bus will echo."""
+    _entity = installation.entity(7, 1)
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+    _written = _entity.written_states
+
+    installation.replay(["*#22*5#2#1*5*1*8970##", "*#22*5#2#1*11*1*8970*15##"])
+
+    assert _entity.written_states == _written
+
+
+def test_selecting_a_station_refreshes_every_amplifier_on_that_source():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    asyncio.run(installation.entity(2, 2).async_select_source("FRANCE INTER"))
+
+    assert installation.entity(2, 1).written_states == 1
+    assert installation.entity(2, 2).written_states == 1
+    assert installation.entity(7, 1).written_states == 0
+
+
+def test_selecting_a_station_does_not_turn_the_amplifier_on(installation):
+    """The tuner is shared: changing station says nothing about who listens."""
+    _entity = installation.entity(7, 1)
+
+    asyncio.run(_entity.async_select_source("FRANCE INTER"))
+
+    assert _entity.state is None
+    assert _entity.source is None
+    assert _entity.extra_state_attributes["frequency_mhz"] == 89.7
+
+
+def test_source_reflects_the_station_the_shared_tuner_is_on(installation):
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
+    assert installation.entity(2, 2).source == "SUD RADIO"
+
+    installation.replay(["*#22*5#2#1*11*1*10110*14##"])
+    assert installation.entity(2, 2).source is None
+
+
+def test_source_carries_the_disambiguating_suffix_of_the_source_list():
+    installation = Installation(amplifiers=[(2, 2, "Radio")], radio_stations={"106.0": "RELAIS", "97.3": "RELAIS"})
+    installation.replay(["*#22*3#2#2*12*1*4##", "*#22*5#2#1*11*1*10600*14##"])
+    _entity = installation.entity(2, 2)
+
+    assert _entity.source_list == ["RELAIS (97.3)", "RELAIS (106.0)"]
+    assert _entity.source == "RELAIS (106.0)"
+    assert _entity.source in _entity.source_list
+
+    asyncio.run(_entity.async_select_source("RELAIS (97.3)"))
+    assert installation.handler.sent == ["*#22*5#2#1*#11*1*9730*14##"]
+
+
+def test_selecting_a_station_the_table_does_not_carry_is_refused(installation):
+    _entity = installation.entity(7, 1)
+
+    with pytest.raises(ha_stubs.ServiceValidationError):
+        asyncio.run(_entity.async_select_source("RADIO NOWHERE"))
+
+    assert installation.handler.sent == []
+    assert installation.tuner[1] == {}
+
+
+def test_selecting_a_station_supports_source_selection(installation):
+    assert installation.entity(7, 1).supported_features & ha_stubs.MediaPlayerEntityFeature.SELECT_SOURCE

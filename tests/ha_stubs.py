@@ -68,6 +68,11 @@ class MediaPlayerEntity(Entity):
 
     _attr_state = None
     _attr_volume_level = None
+    _attr_supported_features = 0
+
+    @property
+    def supported_features(self):
+        return self._attr_supported_features
 
     @property
     def state(self):
@@ -158,6 +163,15 @@ class MediaPlayerEntityFeature:
     VOLUME_STEP = 1024
     NEXT_TRACK = 32
     PREVIOUS_TRACK = 16
+    SELECT_SOURCE = 2048
+
+
+class HomeAssistantError(Exception):
+    """Stand-in for `homeassistant.exceptions.HomeAssistantError`."""
+
+
+class ServiceValidationError(HomeAssistantError):
+    """Stand-in for `homeassistant.exceptions.ServiceValidationError`."""
 
 
 class EntityCategory(metaclass=_StringEnumMeta):
@@ -179,6 +193,11 @@ def install():
 
     _module("homeassistant")
     _module("homeassistant.core", HomeAssistant=object)
+    _module(
+        "homeassistant.exceptions",
+        HomeAssistantError=HomeAssistantError,
+        ServiceValidationError=ServiceValidationError,
+    )
     _module("homeassistant.helpers")
     _module("homeassistant.helpers.entity", Entity=Entity)
     _module(
