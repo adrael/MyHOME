@@ -36,6 +36,7 @@ from .const import (
 )
 from .myhome_device import MyHOMEEntity
 from .gateway import MyHOMEGatewayHandler
+from .tuner import request_tuning
 from .sound_diffusion import (
     DEFAULT_TUNING_PRESET,
     MAX_VOLUME,
@@ -52,7 +53,6 @@ from .sound_diffusion import (
     format_frequency,
     request_amplifier_state,
     request_amplifier_volume,
-    request_source_frequency_station,
     set_frequency,
     station_entries,
     station_label,
@@ -207,8 +207,26 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         return self._tuner.get("modulation", MODULATION_FM)
 
     @property
+    def _rds_name(self):
+        """Name the tuner is broadcasting over RDS, `None` until it sends one.
+
+        Read from the shared store like the frequency: it describes the box, not
+        this amplifier. It is dropped when the frequency moves and comes back a
+        moment later, the tuner sending a name per text it receives.
+        """
+        return self._tuner.get("rds")
+
+    @property
     def _station_name(self):
-        return station_name(self._frequency, self._radio_stations)
+        """The station table first, the name the radio calls itself second.
+
+        The table is what a user configured, so it wins: it names the station the
+        way the rest of the dashboard does, and a tuner sitting between two
+        frequencies cannot make it drift. RDS covers what the table does not —
+        a frequency nobody listed, or a table left to the built-in one on a bus
+        somewhere else entirely.
+        """
+        return station_name(self._frequency, self._radio_stations) or self._rds_name
 
     @property
     def media_content_type(self):
@@ -216,7 +234,10 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
 
     @property
     def media_title(self):
-        """`106.0 MHz · SUD RADIO`, or just the frequency when it is unknown.
+        """`106.0 MHz · SUD RADIO`, or just the frequency when nothing names it.
+
+        The name is the station table's, the RDS one when the table has nothing
+        at that frequency, and neither when the radio is silent about it.
 
         What is *playing* here, so `None` while the amplifier is off, however
         well tuned the source may be.
@@ -280,6 +301,10 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
             if _station is not None:
                 _attributes["station_name"] = _station
 
+        _rds = self._rds_name
+        if _rds is not None:
+            _attributes["rds_name"] = _rds
+
         _preset = self._tuner.get("station")
         if _preset is not None:
             _attributes["preset"] = _preset
@@ -316,7 +341,7 @@ class MyHOMEAmplifier(MyHOMEEntity, MediaPlayerEntity):
         await self._gateway_handler.send_status_request(OWNCommand(request_amplifier_volume(self._area, self._point)))
 
         if _ask_the_tuner:
-            await self._gateway_handler.send_status_request(OWNCommand(request_source_frequency_station(self._tuner_source)))
+            await request_tuning(self._gateway_handler, self._tuner_source)
 
     async def async_turn_on(self, **kwargs):  # pylint: disable=unused-argument
         """Turn the amplifier on."""

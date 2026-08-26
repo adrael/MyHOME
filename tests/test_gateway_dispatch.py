@@ -1241,6 +1241,158 @@ def test_the_first_frequency_of_an_unknown_tuner_carries_no_preset(installation)
 
 
 # --------------------------------------------------------------------------- #
+# RDS: the name the station calls itself
+# --------------------------------------------------------------------------- #
+
+#: The frames of the hardware session of 2026-08-26, verbatim.
+RDS_SKYROCK = "*#22*5#2#1*10*83*75*89*82*79*67*75*32##"
+RDS_M_RADIO = "*#22*5#2#1*10*77*32*82*65*68*73*79*32##"
+RDS_SILENT = "*#22*5#2#1*10*32*32*32*32*32*32*32*32##"
+
+
+def test_the_rds_name_reaches_the_shared_store(installation):
+    installation.replay(["*#22*5#2#1*11*1*8850*3##", RDS_M_RADIO])
+
+    assert installation.tuner[1]["rds"] == "M RADIO"
+
+
+def test_a_tuner_with_nothing_to_say_holds_no_name(installation):
+    """Eight spaces: tuned, but no RDS text has reached the box yet."""
+    installation.replay([RDS_SILENT])
+
+    assert installation.tuner[1]["rds"] is None
+
+
+def test_an_rds_name_that_says_nothing_new_writes_nothing(installation):
+    installation.replay([RDS_SKYROCK])
+    for _entity in installation.entities.values():
+        _entity.written_states = 0
+
+    installation.replay([RDS_SKYROCK])
+
+    assert all(_entity.written_states == 0 for _entity in installation.entities.values())
+
+
+def test_the_rds_name_is_dropped_when_the_frequency_moves(installation):
+    """It named the station that was playing; the tuner sends the new one after."""
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK])
+
+    installation.replay(["*#22*5#2#1*5*1*8850##"])
+    assert installation.tuner[1]["rds"] is None
+
+    installation.replay([RDS_M_RADIO])
+    assert installation.tuner[1]["rds"] == "M RADIO"
+
+
+def test_a_frequency_that_did_not_move_keeps_the_rds_name(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK, "*#22*5#2#1*5*1*10280##"])
+
+    assert installation.tuner[1]["rds"] == "SKYROCK"
+
+
+def test_the_first_frequency_of_a_gateway_keeps_a_name_that_arrived_first(installation):
+    """A first reading is not a change: the RDS stream can answer before it."""
+    installation.replay([RDS_SKYROCK, "*#22*5#2#1*11*1*10280*2##"])
+
+    assert installation.tuner[1]["rds"] == "SKYROCK"
+
+
+def test_an_rds_name_of_another_source_leaves_this_one_alone():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+
+    installation.replay(["*#22*5#2#2*10*83*75*89*82*79*67*75*32##"])
+
+    assert installation.tuner[2]["rds"] == "SKYROCK"
+    assert installation.tuner.get(1, {}).get("rds") is None
+
+
+def test_the_rds_name_is_an_attribute_of_every_amplifier_on_that_source(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##", RDS_SKYROCK])
+
+    assert installation.entity(7, 1).extra_state_attributes["rds_name"] == "SKYROCK"
+    assert installation.entity(2, 2).extra_state_attributes["rds_name"] == "SKYROCK"
+
+
+def test_an_amplifier_of_a_silent_tuner_carries_no_rds_attribute(installation):
+    installation.replay(["*#22*5#2#1*11*1*10280*2##"])
+
+    assert "rds_name" not in installation.entity(7, 1).extra_state_attributes
+
+
+def test_the_station_table_wins_over_the_rds_name(installation):
+    """The table is what a user configured; RDS covers what it does not carry."""
+    installation.replay(["*#22*5#2#1*11*1*9770*4##", RDS_SKYROCK])
+    asyncio.run(installation.entity(7, 1).async_turn_on())
+
+    assert installation.entity(7, 1).media_title == "97.7 MHz · FRANCE CULTURE"
+    assert installation.entity(7, 1).media_channel == "FRANCE CULTURE"
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "FRANCE CULTURE"
+    assert installation.entity(7, 1).extra_state_attributes["rds_name"] == "SKYROCK"
+
+
+def test_a_frequency_the_table_does_not_carry_is_named_by_rds(installation):
+    installation.replay(["*#22*5#2#1*5*1*8830##", RDS_SKYROCK])
+    asyncio.run(installation.entity(7, 1).async_turn_on())
+
+    assert installation.entity(7, 1).media_title == "88.3 MHz · SKYROCK"
+    assert installation.entity(7, 1).media_channel == "SKYROCK"
+    assert installation.entity(7, 1).extra_state_attributes["station_name"] == "SKYROCK"
+
+
+def test_a_frequency_nothing_names_is_the_frequency_alone(installation):
+    installation.replay(["*#22*5#2#1*5*1*8830##"])
+    asyncio.run(installation.entity(7, 1).async_turn_on())
+
+    assert installation.entity(7, 1).media_title == "88.3 MHz"
+    assert installation.entity(7, 1).media_channel is None
+
+
+def test_the_rds_name_of_an_amplifier_that_is_off_is_still_published(installation):
+    """Tuner scoped, like the frequency and the preset: one box, one name."""
+    installation.replay(["*#22*5#2#1*5*1*8830##", RDS_SKYROCK])
+
+    assert installation.entity(7, 1).state != PLAYING
+    assert installation.entity(7, 1).extra_state_attributes["rds_name"] == "SKYROCK"
+    assert installation.entity(7, 1).media_title is None
+
+
+def test_the_rds_stream_is_started_once_per_source(installation):
+    """Every entity reading a source claims the same flag, so one frame goes out."""
+    for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values()):
+        asyncio.run(_entity.async_update())
+
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+def test_each_source_gets_its_own_rds_stream():
+    installation = Installation(source=lambda area, point: 1 if area == 2 else 2)
+
+    for _entity in list(installation.entities.values()) + list(installation.tuner_entities.values()):
+        asyncio.run(_entity.async_update())
+
+    assert sorted(installation.handler.sent) == ["*22*31*2#1##", "*22*31*2#2##"]
+
+
+def test_a_reconnection_starts_the_rds_stream_again(installation):
+    """The tuner was left alone while we were not listening; so was its stream."""
+    asyncio.run(installation.entity(7, 1).async_update())
+    installation.handler.sent.clear()
+    installation.handler._set_connected(False)
+
+    asyncio.run(installation.handler.reconnected())
+
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+def test_the_rds_stream_is_started_after_the_tuning_was_asked_for(installation):
+    """The request first: it is answered at once, the RDS name whenever."""
+    asyncio.run(installation.tuner_entity("frequency").async_update())
+
+    assert installation.handler.status_requests == ["*#22*5#2#1*11##"]
+    assert installation.handler.sent == ["*22*31*2#1##"]
+
+
+# --------------------------------------------------------------------------- #
 # The tuner device: one `number` and four `button` entities
 # --------------------------------------------------------------------------- #
 

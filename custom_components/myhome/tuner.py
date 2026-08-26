@@ -43,9 +43,30 @@ from .sound_diffusion import (
     SourceStation,
     frequency_seek_down,
     frequency_seek_up,
+    rds_start,
+    request_source_frequency_station,
     station_next,
     station_previous,
 )
+
+
+async def request_tuning(gateway: MyHOMEGatewayHandler, source: int) -> None:
+    """Ask a source what it is playing, and have it tell its RDS name from now on.
+
+    The two things a tuner is asked for once per connection, together in one
+    place: every caller is a `CONF_TUNER_REQUESTED` claim — the amplifiers of
+    `media_player.async_update` and the entities of the tuner device — so a
+    source is asked once however many entities read it, and asked again after a
+    reconnection, which clears the flag.
+
+    The RDS stream needs no repeating: once started, the tuner keeps sending a
+    name per text it receives, station changes included (verified on hardware
+    2026-08-26). It is sent as a command rather than as a status request — it
+    changes what the tuner does, and its answers arrive whenever the radio has
+    something to say, not as a reply.
+    """
+    await gateway.send_status_request(OWNCommand(request_source_frequency_station(source)))
+    await gateway.send(OWNCommand(rds_start(source)))
 
 
 class MyHOMETunerEntity(MyHOMEEntity):

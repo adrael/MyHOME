@@ -75,6 +75,7 @@ from .sound_diffusion import (
     SOURCE_EVENTS,
     SourceFrequency,
     SourceFrequencyStation,
+    SourceRds,
     SourceStation,
     amplifier_device_id,
     parse_sound_diffusion,
@@ -626,15 +627,24 @@ class MyHOMEGatewayHandler:
         _source = self.hass.data[DOMAIN][self.mac].setdefault(CONF_SOUND_SOURCES, {}).setdefault(event.source, {})
         _before = dict(_source)
 
+        if isinstance(event, (SourceFrequency, SourceFrequencyStation)):
+            # The RDS name belongs to the station that was playing: the tuner
+            # sends the new one a moment later, and until it does there is
+            # nothing to show. Only on a *change* — the first reading of a
+            # gateway is not one, and would wipe a name that arrived first.
+            if _before.get("frequency") is not None and event.frequency != _before["frequency"]:
+                _source["rds"] = None
+            _source["modulation"] = event.modulation
+            _source["frequency"] = event.frequency
+
         if isinstance(event, SourceFrequencyStation):
-            _source["modulation"] = event.modulation
-            _source["frequency"] = event.frequency
             _source["station"] = event.station
-        elif isinstance(event, SourceFrequency):
-            _source["modulation"] = event.modulation
-            _source["frequency"] = event.frequency
         elif isinstance(event, SourceStation):
             _source["station"] = event.station
+        elif isinstance(event, SourceRds):
+            # An empty text is a tuner with nothing to say — eight spaces on the
+            # bus — and is held as "no name" rather than as a blank one.
+            _source["rds"] = event.text or None
 
         return _source != _before
 

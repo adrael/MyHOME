@@ -39,10 +39,9 @@ from .sound_diffusion import (
     MODULATION_FM,
     SOURCE_EVENTS,
     SourceFrequencyStation,
-    request_source_frequency_station,
     set_frequency,
 )
-from .tuner import MyHOMETunerEntity
+from .tuner import MyHOMETunerEntity, request_tuning
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -149,7 +148,7 @@ class MyHOMETunerFrequency(MyHOMETunerEntity, NumberEntity):
             return
         _tuner[CONF_TUNER_REQUESTED] = True
 
-        await self._gateway_handler.send_status_request(OWNCommand(request_source_frequency_station(self._source)))
+        await request_tuning(self._gateway_handler, self._source)
 
     async def async_set_native_value(self, value: float) -> None:
         """Retune the source, spending the scratch preset.
