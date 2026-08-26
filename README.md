@@ -305,9 +305,10 @@ Manually, if you would rather not add a custom repository: back up
 `custom_components/myhome/`, add the `media_player:` block to `myhome.yaml`, and
 restart.
 
-To roll back, reinstall the upstream integration **and comment out both the
-`media_player:` and the `radio_stations:` keys of `myhome.yaml`** before
-restarting: upstream knows neither and will refuse the file.
+To roll back, reinstall the upstream integration **and comment out the
+`media_player:`, `radio_stations:` and `tuning_preset:` keys of
+`myhome.yaml`** before restarting: upstream knows none of them and will refuse
+the file.
 
 ### First run
 
