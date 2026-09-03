@@ -2,3 +2,6 @@ OWNd==0.7.48
 PyYAML
 pytest
 voluptuous
+# Home Assistant 2026.9+ validates with probatio's voluptuous shim; the tests
+# run under it whenever it is installed (see tests/conftest.py).
+probatio==0.11.4; python_version >= "3.12"

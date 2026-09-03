@@ -254,9 +254,30 @@ class BusInterface(object):
 GATEWAY_OPTIONS = (CONF_RADIO_STATIONS, CONF_TUNING_PRESET, CONF_VIDEO_DOOR_ENTRY)
 
 
-class MyHomeConfigSchema(Schema):
+class MyHomeSchema:
+    """A validator that runs a `Schema`, then post-processes what it returns.
+
+    Deliberately *not* a `Schema` subclass. voluptuous compiles a nested `Schema`
+    instance as a plain callable, so an overridden `__call__` runs; probatio's
+    voluptuous shim (what Home Assistant ships since 2026.9) delegates a nested
+    `Schema` straight to its compiled engine and never calls `__call__`, which
+    silently drops the re-keying and the defaults added below. A plain callable
+    object is invoked by both.
+    """
+
+    def __init__(self, schema, **kwargs):
+        self._schema = Schema(schema, **kwargs)
+
+    def _validate(self, data):
+        return self._schema(data)
+
     def __call__(self, data):
-        data = super().__call__(data)
+        return self._validate(data)
+
+
+class MyHomeConfigSchema(MyHomeSchema):
+    def __call__(self, data):
+        data = self._validate(data)
         _rekeyed_data = {}
         for gateway in data:
             _rekeyed_data[data[gateway][CONF_MAC]] = {}
@@ -406,9 +427,9 @@ def _add_video_door_entry_devices(platforms: dict, video_door_entry) -> None:
             platforms[CAMERA][_device_id] = _device()
 
 
-class MyHomeDeviceSchema(Schema):
+class MyHomeDeviceSchema(MyHomeSchema):
     def __call__(self, data):
-        data = super().__call__(data)
+        data = self._validate(data)
         _rekeyed_data = {}
 
         for device in data:
@@ -439,9 +460,9 @@ class MyHomeDeviceSchema(Schema):
         return _rekeyed_data
 
 
-class MyHomeSensorSchema(Schema):
+class MyHomeSensorSchema(MyHomeSchema):
     def __call__(self, data):
-        data = super().__call__(data)
+        data = self._validate(data)
         _rekeyed_data = {}
 
         for device in data:
