@@ -77,9 +77,11 @@ class MyhomeFlowHandler(ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(config_entry):  # pylint: disable=unused-argument
         """Get the options flow for this handler."""
-        return MyhomeOptionsFlowHandler(config_entry)
+        # `OptionsFlow.config_entry` is a read-only property Home Assistant fills
+        # in itself (2024.11+); assigning it was removed in 2025.12.
+        return MyhomeOptionsFlowHandler()
 
     def __init__(self):
         """Initialize the MyHome flow."""
@@ -374,11 +376,17 @@ class MyhomeFlowHandler(ConfigFlow, domain=DOMAIN):
 class MyhomeOptionsFlowHandler(OptionsFlow):
     """Handle MyHome options."""
 
-    def __init__(self, config_entry):
+    def __init__(self):
         """Initialize MyHome options flow."""
-        self.config_entry = config_entry
-        self.options = dict(config_entry.options)
-        self.data = dict(config_entry.data)
+        # `self.config_entry` is only resolvable once the flow manager has
+        # attached the flow to hass, so the entry is read on the first step.
+        self.options = {}
+        self.data = {}
+
+    def _load_config_entry(self):
+        """Seed the form values from the config entry being edited."""
+        self.options = dict(self.config_entry.options)
+        self.data = dict(self.config_entry.data)
         if CONF_WORKER_COUNT not in self.options:
             self.options[CONF_WORKER_COUNT] = 1
         if CONF_FILE_PATH not in self.options:
@@ -388,6 +396,7 @@ class MyhomeOptionsFlowHandler(OptionsFlow):
 
     async def async_step_init(self, user_input=None):  # pylint: disable=unused-argument
         """Manage the MyHome options."""
+        self._load_config_entry()
         return await self.async_step_user()
 
     async def async_step_user(self, user_input=None, errors={}):  # pylint: disable=dangerous-default-value
