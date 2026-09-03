@@ -46,6 +46,7 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.is_connected = True
         self.generate_events = False
         self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.0.10")
+        self.device_id = "gateway-registry-id"
         self.sent = []
 
 

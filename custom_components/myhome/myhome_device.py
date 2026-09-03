@@ -45,7 +45,7 @@ class MyHOMEEntity(Entity):
             "name": name,
             "manufacturer": self._manufacturer,
             "model": self._model,
-            "via_device": (DOMAIN, self._gateway_handler.unique_id),
+            "via_device_id": self._gateway_handler.device_id,
         }
 
     async def async_added_to_hass(self):

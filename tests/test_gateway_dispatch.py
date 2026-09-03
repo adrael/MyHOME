@@ -77,6 +77,9 @@ CAPTURE = [
 ]
 
 
+GATEWAY_DEVICE_ID = "gateway-registry-id"
+
+
 class FakeGateway(gateway.MyHOMEGatewayHandler):
     """The real handler, without the config entry and the sockets."""
 
@@ -85,6 +88,7 @@ class FakeGateway(gateway.MyHOMEGatewayHandler):
         self.is_connected = True
         self.generate_events = False
         self.gateway = types.SimpleNamespace(serial=MAC, log_id="[test]", host="192.168.0.10")
+        self.device_id = GATEWAY_DEVICE_ID
         # Cancelled by `listening_loop` on its way out.
         self.listening_worker = types.SimpleNamespace(cancel=lambda: None)
         self.sent = []
@@ -1516,7 +1520,7 @@ def test_the_only_tuner_of_a_house_is_named_without_a_number(installation):
     assert _frequency._attr_device_info["name"] == "Tuner FM"
     assert _frequency._attr_device_info["identifiers"] == {(DOMAIN, f"{MAC}-22-2#1")}
     assert _frequency._attr_device_info["manufacturer"] == "BTicino S.p.A."
-    assert _frequency._attr_device_info["via_device"] == (DOMAIN, MAC)
+    assert _frequency._attr_device_info["via_device_id"] == GATEWAY_DEVICE_ID
     # `has_entity_name`: "Tuner FM" + "Frequency" gives `number.tuner_fm_frequency`.
     assert _frequency._attr_has_entity_name is True
     assert _frequency._attr_name == "Frequency"
