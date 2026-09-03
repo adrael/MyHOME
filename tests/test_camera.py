@@ -39,6 +39,7 @@ class FakeGateway:
 
     mac = MAC
     unique_id = MAC
+    device_id = "gateway-registry-id"
     log_id = "[test]"
 
     def __init__(self):

@@ -456,3 +456,28 @@ def test_the_dashboard_lists_the_rooms_in_the_order_of_the_readme():
     _all_off = [_card for _card in _dashboard_cards() if _card.get("type") == "button" and "every amplifier off" in _card["name"]]
     assert len(_all_off) == 1
     assert _all_off[0]["tap_action"]["target"]["entity_id"] == _expected
+
+
+def test_nested_device_schemas_add_the_keys_the_platforms_read():
+    """Regression: under probatio's voluptuous shim (Home Assistant 2026.9+) a
+    nested `Schema` subclass had its `__call__` skipped, so the devices kept
+    their YAML keys and lost the defaults `light.py`, `cover.py`, `button.py`,
+    `media_player.py` and `__init__.py` index without a guard."""
+    _platforms = validate.config_schema(
+        {
+            "house": {
+                "mac": MAC,
+                "light": {"lamp": {"where": "12", "name": "Lamp"}},
+                "cover": {"blind": {"where": "23", "name": "Blind"}},
+                "media_player": {"ampli": {"where": "3#7#1", "name": "Radio"}},
+                "sensor": {"temp": {"where": "1", "name": "Temp", const.CONF_DEVICE_CLASS: ha_stubs.SensorDeviceClass.TEMPERATURE}},
+            }
+        }
+    )[MAC][const.CONF_PLATFORMS]
+
+    for _platform, _device_id in (("light", "1-12"), ("cover", "2-23"), ("button", "1-12"), ("media_player", "22-3#7#1")):
+        _device = _platforms[_platform][_device_id]
+        for _key in (const.CONF_ENTITIES, const.CONF_ENTITY_NAME, const.CONF_ICON, const.CONF_DEVICE_MODEL):
+            assert _key in _device, f"{_platform}/{_device_id} lacks {_key}"
+    assert _platforms["sensor"]["4-1"][const.CONF_ENTITIES] == {}
+    assert _platforms["sensor"]["4-1"][const.CONF_DEVICE_MODEL] is None

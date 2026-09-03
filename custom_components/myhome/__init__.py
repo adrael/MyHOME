@@ -129,6 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         model=hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_ENTITY].model,
         sw_version=hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_ENTITY].firmware,
     )
+    hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_ENTITY].device_id = gateway_device_entry.id
 
     await hass.config_entries.async_forward_entry_setups(
         entry, hass.data[DOMAIN][entry.data[CONF_MAC]][CONF_PLATFORMS].keys()
@@ -152,8 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     entities_to_be_removed = []
     devices_to_be_removed = [
         device_entry.id
-        for device_entry in device_registry.devices.values()
-        if entry.entry_id in device_entry.config_entries
+        for device_entry in dr.async_entries_for_config_entry(device_registry, entry.entry_id)
     ]
 
     configured_entities = []

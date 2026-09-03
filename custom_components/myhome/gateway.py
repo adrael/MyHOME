@@ -153,6 +153,10 @@ OWND_LOGGER.addFilter(OWNdLogFilter(LOGGER))
 class MyHOMEGatewayHandler:
     """Manages a single MyHOME Gateway."""
 
+    #: Registry id of the gateway's device entry, set by `async_setup_entry`
+    #: before the platforms are loaded; the entities link to it as `via_device_id`.
+    device_id: str = None
+
     def __init__(self, hass, config_entry, generate_events=False):
         build_info = {
             "address": config_entry.data[CONF_HOST],
